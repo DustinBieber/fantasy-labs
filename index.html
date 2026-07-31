@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A1F1A">
+<title>Fantasy Labs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --pitch:#0A1F1A;
+  --turf:#11302A;
+  --line:#1D4A40;
+  --chalk:#E9EFEA;
+  --mute:#8AA69C;
+  --signal:#FFB627;
+  --gain:#3DD68C;
+  --loss:#E5544D;
+  --display:'Archivo',system-ui,sans-serif;
+  --body:'Inter',system-ui,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--pitch);
+  color:var(--chalk);
+  font-family:var(--body);
+  font-size:15px;
+  line-height:1.5;
+  padding-bottom:env(safe-area-inset-bottom);
+  overflow-x:hidden;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:repeating-linear-gradient(90deg,transparent 0 79px,rgba(233,239,234,.035) 79px 80px);
+}
+.wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:0 16px}
+
+header{border-bottom:1px solid var(--line);background:rgba(10,31,26,.92);backdrop-filter:blur(8px);position:sticky;top:0;z-index:50}
+.bar{display:flex;align-items:center;gap:14px;padding:12px 0;flex-wrap:wrap}
+.brand{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:-.02em;white-space:nowrap}
+.brand span{color:var(--signal)}
+.grow{flex:1}
+select,input,button{font-family:var(--body);font-size:14px;color:var(--chalk);background:var(--turf);border:1px solid var(--line);border-radius:7px;padding:8px 11px}
+select{max-width:230px}
+button{cursor:pointer;transition:border-color .15s,background .15s}
+button:hover{border-color:var(--signal)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+.fmt{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--pitch);background:var(--signal);padding:4px 8px;border-radius:5px;font-weight:600;white-space:nowrap}
+
+nav{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+.tab{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:13px 16px;color:var(--mute);font-weight:600;font-size:14px;white-space:nowrap}
+.tab:hover{color:var(--chalk);border-color:transparent}
+.tab.on{color:var(--signal);border-bottom-color:var(--signal)}
+
+main{padding:22px 0 60px}
+.panel{display:none}
+.panel.on{display:block}
+
+h2{font-family:var(--display);font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.13em;color:var(--mute);margin:26px 0 12px}
+h2:first-child{margin-top:0}
+
+.card{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:rgba(17,48,42,.4)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--mute);text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:500;white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid rgba(29,74,64,.5)}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(29,74,64,.35)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+.pos{font-family:var(--mono);font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:var(--line);letter-spacing:.03em}
+.pos.QB{background:#4A2B5E;color:#DDB6F5}
+.pos.RB{background:#1E4A32;color:#7BE8AC}
+.pos.WR{background:#173C58;color:#8CC9F0}
+.pos.TE{background:#5A3A1B;color:#F5C98A}
+.dim{color:var(--mute)}
+.small{font-size:12px}
+
+.meter{position:relative;height:5px;background:var(--line);border-radius:3px;overflow:hidden;min-width:54px}
+.meter i{position:absolute;inset:0 auto 0 0;background:var(--signal);border-radius:3px}
+
+.beam-stage{padding:30px 16px 20px;display:flex;flex-direction:column;align-items:center}
+.beam-wrap{width:100%;max-width:440px;height:96px;position:relative}
+.fulcrum{position:absolute;left:50%;bottom:0;transform:translateX(-50%);width:0;height:0;border-left:15px solid transparent;border-right:15px solid transparent;border-bottom:26px solid var(--line)}
+.beam{position:absolute;left:50%;bottom:26px;width:100%;max-width:400px;height:5px;background:var(--chalk);border-radius:3px;transform-origin:center;transform:translateX(-50%) rotate(0deg);transition:transform .55s cubic-bezier(.34,1.3,.64,1)}
+.pan{position:absolute;top:-9px;width:13px;height:13px;border-radius:50%;background:var(--signal)}
+.pan.l{left:-6px}
+.pan.r{right:-6px}
+.verdict{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em;margin-top:16px;text-align:center}
+.verdict small{display:block;font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.09em;text-transform:uppercase;color:var(--mute);margin-top:5px}
+.sides{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}
+.side{border:1px solid var(--line);border-radius:11px;padding:14px;background:rgba(17,48,42,.4)}
+.side h3{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--mute);font-weight:500;margin-bottom:10px}
+.chip{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;font-size:13px}
+.chip button{padding:0 5px;background:none;border:none;color:var(--mute);font-size:17px;line-height:1}
+.chip button:hover{color:var(--loss)}
+.side-total{font-family:var(--mono);font-size:19px;font-weight:600;color:var(--signal);margin-top:10px;text-align:right}
+
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
+.item{border:1px solid var(--line);border-radius:11px;padding:14px;background:rgba(17,48,42,.4)}
+.item .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:7px}
+.item .nm{font-weight:600;font-size:15px}
+.adds{font-family:var(--mono);font-size:12px;color:var(--gain)}
+.flag{display:inline-block;font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;padding:2px 6px;border-radius:4px;margin:5px 5px 0 0}
+.flag.own{background:var(--signal);color:var(--pitch);font-weight:600}
+.flag.young{background:var(--line);color:var(--gain)}
+.flag.inj{background:#4A1F1F;color:#F0A0A0}
+a.src{display:block;border:1px solid var(--line);border-radius:11px;padding:14px;text-decoration:none;color:var(--chalk);background:rgba(17,48,42,.4);transition:border-color .15s}
+a.src:hover{border-color:var(--signal)}
+a.src b{display:block;font-weight:600;margin-bottom:3px}
+
+.note{color:var(--mute);font-size:13px;padding:14px 0}
+.err{border:1px solid var(--loss);border-radius:9px;padding:12px;color:#F5B0AC;background:rgba(229,84,77,.09);font-size:13px;margin-bottom:14px}
+.load{color:var(--mute);font-family:var(--mono);font-size:12px;letter-spacing:.06em;padding:26px 0;text-align:center}
+
+@media(max-width:640px){
+  .sides{grid-template-columns:1fr}
+  select{max-width:150px}
+  th,td{padding:9px 8px}
+  .brand{font-size:17px}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="bar">
+      <div class="brand">FANTASY<span>LABS</span></div>
+      <select id="leagueSel" aria-label="Choose league"><option>Loading…</option></select>
+      <span class="fmt" id="fmtBadge" hidden></span>
+      <div class="grow"></div>
+      <button id="refresh" title="Reload live data">↻</button>
+    </div>
+    <nav>
+      <button class="tab on" data-p="roster">Roster</button>
+      <button class="tab" data-p="trade">Trade</button>
+      <button class="tab" data-p="radar">Radar</button>
+      <button class="tab" data-p="news">News</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="boot" class="load">Connecting to Sleeper…</div>
+  <div id="errBox"></div>
+
+  <section class="panel on" id="p-roster"></section>
+  <section class="panel" id="p-trade"></section>
+  <section class="panel" id="p-radar"></section>
+  <section class="panel" id="p-news"></section>
+</main>
+
+<script>
+const USERNAME = "dustinbeeber";
+const SLEEPER  = "https://api.sleeper.app/v1";
+const DP_VALUES= "https://raw.githubusercontent.com/dynastyprocess/data/master/files/values-players.csv";
+
+const S = { user:null, leagues:[], league:null, rosters:[], members:[], players:{}, values:{}, week:1, superflex:false, trade:{a:[],b:[]} };
+
+const $  = s => document.querySelector(s);
+const el = (h) => { const d=document.createElement('div'); d.innerHTML=h.trim(); return d.firstElementChild; };
+const norm = n => (n||"").toLowerCase().replace(/[.'`-]/g,"").replace(/\s+(jr|sr|ii|iii|iv|v)$/,"").trim();
+
+async function getJSON(u){ const r = await fetch(u); if(!r.ok) throw new Error(`${r.status} on ${u.split('/').slice(-2).join('/')}`); return r.json(); }
+
+function showError(msg){ $('#errBox').appendChild(el(`<div class="err">${msg}</div>`)); }
+
+function parseCSV(text){
+  const rows=[]; let row=[], val="", q=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){val+='"';i++;} else q=false; } else val+=c; }
+    else if(c==='"') q=true;
+    else if(c===','){ row.push(val); val=""; }
+    else if(c==='\n'){ row.push(val); rows.push(row); row=[]; val=""; }
+    else if(c!=='\r') val+=c;
+  }
+  if(val||row.length){ row.push(val); rows.push(row); }
+  const head=rows.shift().map(h=>h.trim());
+  return rows.filter(r=>r.length===head.length).map(r=>Object.fromEntries(head.map((h,i)=>[h,r[i]])));
+}
+
+async function loadPlayers(){
+  const key="fl_players_v1", stamp="fl_players_day";
+  const today=new Date().toISOString().slice(0,10);
+  try{
+    if(localStorage.getItem(stamp)===today){
+      const c=localStorage.getItem(key);
+      if(c) return JSON.parse(c);
+    }
+  }catch(e){}
+  const raw = await getJSON(`${SLEEPER}/players/nfl`);
+  const slim={};
+  for(const id in raw){
+    const p=raw[id];
+    if(!p.full_name || !["QB","RB","WR","TE"].includes(p.position)) continue;
+    slim[id]={n:p.full_name,p:p.position,t:p.team||"FA",a:p.age||null,i:p.injury_status||null,y:p.years_exp};
+  }
+  try{ localStorage.setItem(key,JSON.stringify(slim)); localStorage.setItem(stamp,today); }catch(e){}
+  return slim;
+}
+
+async function loadValues(){
+  const r = await fetch(DP_VALUES);
+  if(!r.ok) throw new Error("DynastyProcess values unavailable");
+  const rows = parseCSV(await r.text());
+  const map={};
+  for(const row of rows){
+    const k=norm(row.player);
+    if(!k) continue;
+    map[k]={
+      one:  +(row.value_1qb||row.value||0),
+      sf:   +(row.value_2qb||row.value_1qb||row.value||0),
+      ecr:  +(row.ecr_pos||0),
+      age:  +(row.age||0)
+    };
+  }
+  return map;
+}
+
+function val(name){
+  const v=S.values[norm(name)];
+  if(!v) return 0;
+  return S.superflex ? v.sf : v.one;
+}
+
+async function boot(){
+  try{
+    const state = await getJSON(`${SLEEPER}/state/nfl`);
+    S.week = state.week || 1;
+    const season = state.season;
+
+    S.user = await getJSON(`${SLEEPER}/user/${USERNAME}`);
+    S.leagues = await getJSON(`${SLEEPER}/user/${S.user.user_id}/leagues/nfl/${season}`);
+
+    if(!S.leagues.length){
+      $('#boot').remove();
+      showError(`No ${season} NFL leagues found for “${USERNAME}”. If your leagues are under a different season, they'll appear once that season opens.`);
+      return;
+    }
+
+    const sel=$('#leagueSel');
+    sel.innerHTML = S.leagues.map((l,i)=>`<option value="${i}">${l.name}</option>`).join("");
+    sel.onchange = () => selectLeague(+sel.value);
+
+    const [players, values] = await Promise.all([
+      loadPlayers().catch(e=>{ showError("Player list failed to load: "+e.message); return {}; }),
+      loadValues().catch(e=>{ showError("Dynasty values failed to load: "+e.message); return {}; })
+    ]);
+    S.players=players; S.values=values;
+
+    $('#boot').remove();
+    await selectLeague(0);
+    loadRadar();
+    renderNews();
+  }catch(e){
+    $('#boot').remove();
+    showError("Couldn't reach Sleeper: "+e.message);
+  }
+}
+
+async function selectLeague(i){
+  S.league = S.leagues[i];
+  S.trade={a:[],b:[]};
+  const positions = S.league.roster_positions||[];
+  S.superflex = positions.includes("SUPER_FLEX");
+  const badge=$('#fmtBadge');
+  badge.hidden=false;
+  badge.textContent = (S.superflex?"SUPERFLEX":"1QB") + " · " + (S.league.total_rosters||"?") + " TEAM";
+
+  $('#p-roster').innerHTML = `<div class="load">Loading rosters…</div>`;
+  try{
+    const [rosters, members] = await Promise.all([
+      getJSON(`${SLEEPER}/league/${S.league.league_id}/rosters`),
+      getJSON(`${SLEEPER}/league/${S.league.league_id}/users`)
+    ]);
+    S.rosters=rosters; S.members=members;
+    renderRoster();
+    renderTrade();
+  }catch(e){
+    $('#p-roster').innerHTML=`<div class="err">Rosters unavailable: ${e.message}</div>`;
+  }
+}
+
+const teamName = ownerId => {
+  const m=S.members.find(u=>u.user_id===ownerId);
+  return m ? (m.metadata?.team_name || m.display_name) : "Orphan team";
+};
+const rosterValue = r => (r.players||[]).reduce((s,id)=>s+(S.players[id]?val(S.players[id].n):0),0);
+
+function renderRoster(){
+  const mine = S.rosters.find(r=>r.owner_id===S.user.user_id);
+  const ranked=[...S.rosters].sort((a,b)=>
+    (b.settings.wins-a.settings.wins) || (b.settings.fpts-a.settings.fpts));
+  const maxV=Math.max(...S.rosters.map(rosterValue),1);
+
+  let html = `<h2>Standings</h2><div class="card"><table>
+    <thead><tr><th>#</th><th>Team</th><th class="num">W-L</th><th class="num">PF</th><th class="num">Value</th><th>Strength</th></tr></thead><tbody>`;
+  ranked.forEach((r,i)=>{
+    const v=rosterValue(r), me=r.owner_id===S.user.user_id;
+    html+=`<tr${me?' style="background:rgba(255,182,39,.09)"':''}>
+      <td class="num dim">${i+1}</td>
+      <td>${teamName(r.owner_id)}${me?' <span class="flag own">you</span>':''}</td>
+      <td class="num">${r.settings.wins}-${r.settings.losses}</td>
+      <td class="num dim">${r.settings.fpts||0}</td>
+      <td class="num">${v.toLocaleString()}</td>
+      <td><div class="meter"><i style="width:${(v/maxV*100).toFixed(1)}%"></i></div></td>
+    </tr>`;
+  });
+  html+=`</tbody></table></div>`;
+
+  if(mine){
+    const list=(mine.players||[]).map(id=>({id,...S.players[id]})).filter(p=>p.n)
+      .map(p=>({...p,v:val(p.n)})).sort((a,b)=>b.v-a.v);
+    const top=list[0]?.v||1;
+    html+=`<h2>Your roster · ${list.length} rostered</h2><div class="card"><table>
+      <thead><tr><th>Player</th><th>Pos</th><th>Team</th><th class="num">Age</th><th class="num">Value</th><th>Share</th></tr></thead><tbody>`;
+    list.forEach(p=>{
+      html+=`<tr>
+        <td>${p.n}${p.i?` <span class="flag inj">${p.i}</span>`:''}</td>
+        <td><span class="pos ${p.p}">${p.p}</span></td>
+        <td class="dim">${p.t}</td>
+        <td class="num ${p.a&&p.a<=24?'':'dim'}">${p.a??'—'}</td>
+        <td class="num">${p.v?p.v.toLocaleString():'<span class="dim">—</span>'}</td>
+        <td><div class="meter"><i style="width:${(p.v/top*100).toFixed(1)}%"></i></div></td>
+      </tr>`;
+    });
+    html+=`</tbody></table></div>
+      <p class="note">Values are DynastyProcess market values for ${S.superflex?'Superflex':'1QB'} — detected from this league's roster settings.</p>`;
+  }else{
+    html+=`<p class="note">You don't have a roster in this league.</p>`;
+  }
+  $('#p-roster').innerHTML=html;
+}
+
+function renderTrade(){
+  const all=[];
+  S.rosters.forEach(r=>(r.players||[]).forEach(id=>{
+    const p=S.players[id];
+    if(p) all.push({id,name:p.n,pos:p.p,team:teamName(r.owner_id),v:val(p.n)});
+  }));
+  all.sort((a,b)=>b.v-a.v);
+
+  $('#p-trade').innerHTML=`
+    <div class="beam-stage">
+      <div class="beam-wrap">
+        <div class="beam" id="beam"><div class="pan l"></div><div class="pan r"></div></div>
+        <div class="fulcrum"></div>
+      </div>
+      <div class="verdict" id="verdict">Even<small>add players to weigh a deal</small></div>
+    </div>
+    <select id="pick" aria-label="Add a player" style="width:100%;max-width:100%;margin-bottom:6px">
+      <option value="">Add a player…</option>
+      ${all.map(p=>`<option value="${p.id}">${p.name} · ${p.pos} · ${p.team} · ${p.v.toLocaleString()}</option>`).join("")}
+    </select>
+    <div class="small dim" style="margin-bottom:14px">Choose a player, then send them to a side.</div>
+    <div class="sides">
+      <div class="side"><h3>You give</h3><div id="sideA"></div><div class="side-total" id="totA">0</div></div>
+      <div class="side"><h3>You get</h3><div id="sideB"></div><div class="side-total" id="totB">0</div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button id="toA" style="flex:1">← Add to give</button>
+      <button id="toB" style="flex:1">Add to get →</button>
+      <button id="clr">Clear</button>
+    </div>`;
+
+  const add=side=>{
+    const id=$('#pick').value; if(!id) return;
+    const p=S.players[id]; if(!p) return;
+    S.trade[side].push({id,name:p.n,pos:p.p,age:p.a,v:val(p.n)});
+    $('#pick').value=""; drawTrade();
+  };
+  $('#toA').onclick=()=>add('a');
+  $('#toB').onclick=()=>add('b');
+  $('#clr').onclick=()=>{S.trade={a:[],b:[]};drawTrade();};
+  drawTrade();
+}
+
+function drawTrade(){
+  const sum=s=>S.trade[s].reduce((t,p)=>t+p.v,0);
+  const A=sum('a'), B=sum('b');
+  const paint=(s,node)=>{
+    node.innerHTML = S.trade[s].length ? S.trade[s].map((p,i)=>
+      `<div class="chip"><span><span class="pos ${p.pos}">${p.pos}</span> ${p.name} ${p.age?`<span class="dim small">${p.age}</span>`:''}</span>
+       <span><span class="num">${p.v.toLocaleString()}</span> <button data-s="${s}" data-i="${i}">×</button></span></div>`).join("")
+      : `<div class="small dim">Nobody yet.</div>`;
+  };
+  paint('a',$('#sideA')); paint('b',$('#sideB'));
+  $('#totA').textContent=A.toLocaleString();
+  $('#totB').textContent=B.toLocaleString();
+
+  document.querySelectorAll('.chip button').forEach(b=>b.onclick=()=>{
+    S.trade[b.dataset.s].splice(+b.dataset.i,1); drawTrade();
+  });
+
+  const diff=B-A, base=Math.max(A,B,1), pct=diff/base;
+  $('#beam').style.transform=`translateX(-50%) rotate(${(-pct*13).toFixed(2)}deg)`;
+
+  const v=$('#verdict');
+  if(!A && !B){ v.innerHTML=`Even<small>add players to weigh a deal</small>`; v.style.color='var(--chalk)'; return; }
+  const gap=Math.abs(diff), fair=gap/base < .08;
+  v.innerHTML = fair
+    ? `Fair deal<small>${gap.toLocaleString()} apart · ${S.superflex?'superflex':'1QB'}</small>`
+    : `${diff>0?'You win':'You lose'} ${gap.toLocaleString()}<small>${(Math.abs(pct)*100).toFixed(0)}% swing · ${S.superflex?'superflex':'1QB'}</small>`;
+  v.style.color = fair ? 'var(--chalk)' : (diff>0 ? 'var(--gain)' : 'var(--loss)');
+}
+
+async function loadRadar(){
+  const box=$('#p-radar');
+  box.innerHTML=`<div class="load">Scanning the wire…</div>`;
+  try{
+    const [adds,drops] = await Promise.all([
+      getJSON(`${SLEEPER}/players/nfl/trending/add?lookback_hours=24&limit=30`),
+      getJSON(`${SLEEPER}/players/nfl/trending/drop?lookback_hours=24&limit=15`)
+    ]);
+    const rostered=new Set();
+    S.rosters.forEach(r=>(r.players||[]).forEach(id=>rostered.add(id)));
+
+    const card=(row,kind)=>{
+      const p=S.players[row.player_id];
+      if(!p) return "";
+      const v=val(p.n), free=!rostered.has(row.player_id);
+      return `<div class="item">
+        <div class="top">
+          <div><div class="nm">${p.n}</div><div class="small dim">${p.p} · ${p.t}${p.a?` · age ${p.a}`:''}</div></div>
+          <div class="adds" style="${kind==='drop'?'color:var(--loss)':''}">${kind==='drop'?'−':'+'}${row.count.toLocaleString()}</div>
+        </div>
+        ${free?'<span class="flag own">free agent</span>':''}
+        ${p.a&&p.a<=24?'<span class="flag young">young</span>':''}
+        ${p.i?`<span class="flag inj">${p.i}</span>`:''}
+        ${v?`<div class="small dim" style="margin-top:7px">Dynasty value ${v.toLocaleString()}</div>`:''}
+      </div>`;
+    };
+
+    box.innerHTML=`
+      <h2>Most added · last 24h</h2>
+      <div class="grid">${adds.map(r=>card(r,'add')).join("")||'<p class="note">Nothing trending right now.</p>'}</div>
+      <h2>Most dropped · last 24h</h2>
+      <div class="grid">${drops.map(r=>card(r,'drop')).join("")||'<p class="note">Nothing trending right now.</p>'}</div>
+      <p class="note">Free-agent tags reflect availability in the league selected above. Young = 24 or under, where dynasty breakouts cluster.</p>`;
+  }catch(e){
+    box.innerHTML=`<div class="err">Trending data unavailable: ${e.message}</div>`;
+  }
+}
+
+function renderNews(){
+  const sources=[
+    ["Rotoworld — NFL player news","Injury updates and beat reporting, updated constantly","https://www.nbcsports.com/fantasy/football/player-news"],
+    ["The Fantasy Footballers","Rankings, ADP analysis, and your Ultimate Draft Kit","https://www.thefantasyfootballers.com/fantasy-football-podcast/"],
+    ["RotoWire — NFL","Lineups, injury tracker, transaction wire","https://www.rotowire.com/football/"],
+    ["RotoBaller — waiver wire","Start/sit and pickup recommendations","https://www.rotoballer.com/category/nfl"],
+    ["PFN weather report","Wind and precipitation graded by fantasy impact","https://www.profootballnetwork.com/fantasy-hq/weather-report"],
+    ["KeepTradeCut","Crowdsourced dynasty values to sanity-check trades","https://keeptradecut.com/dynasty-rankings"]
+  ];
+  $('#p-news').innerHTML=`
+    <h2>Reading room</h2>
+    <div class="grid">${sources.map(([t,d,u])=>
+      `<a class="src" href="${u}" target="_blank" rel="noopener"><b>${t}</b><span class="small dim">${d}</span></a>`).join("")}</div>
+    <p class="note">These sites block direct embedding, so headlines open in a new tab. For a written summary of any player or team, ask Claude — it can pull and read these live.</p>`;
+}
+
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='p-'+t.dataset.p));
+});
+$('#refresh').onclick=()=>{ try{localStorage.removeItem('fl_players_day');}catch(e){} location.reload(); };
+
+boot();
+</script>
+</body>
+</html>
