@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ops Hub</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">Ops&nbsp;Hub</div>
+    <span id="demo-badge" class="badge demo" hidden>Demo data</span>
+    <div class="grow"></div>
+    <span id="last-sync" class="muted small"></span>
+    <button id="btn-rules" class="btn">Run rules</button>
+    <button id="btn-sync" class="btn primary">Sync all</button>
+  </div>
+  <nav class="tabs" id="tabs">
+    <a href="#overview" data-tab="overview">Overview</a>
+    <a href="#orders" data-tab="orders">Orders</a>
+    <a href="#inventory" data-tab="inventory">Inventory</a>
+    <a href="#freight" data-tab="freight">Freight</a>
+    <a href="#billing" data-tab="billing">3PL billing</a>
+    <a href="#connectors" data-tab="connectors">Connectors</a>
+  </nav>
+</header>
+
+<main id="view" class="wrap" aria-live="polite"></main>
+
+<aside id="drawer" class="drawer" hidden>
+  <div class="drawer-head"><h2 id="drawer-title"></h2><button class="btn ghost" id="drawer-close" aria-label="Close">&times;</button></div>
+  <div id="drawer-body" class="drawer-body"></div>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
