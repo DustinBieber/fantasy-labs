@@ -1,0 +1,98 @@
+"""Live proof: run every Phase 1 data job once against the real public sources, then print what the
+dashboard will show. Writes into the app's database (data/kalshi_edge.db) unless --temp is passed.
+
+    ./start.sh smoke            # uses the app database, so the dashboard is populated afterwards
+    ./start.sh smoke --temp     # throwaway database
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import tempfile
+import time
+
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--temp", action="store_true", help="use a throwaway database")
+    ap.add_argument("--skip-scan", action="store_true", help="skip the full scan (faster)")
+    args = ap.parse_args()
+    if args.temp:
+        os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/smoke.db"
+
+    from sqlalchemy import func, select
+
+    from app import config, db
+    from app.services import edges, jobs
+    from app.timeutil import hst, now_ts
+
+    print(f"Kalshi Edge live smoke test · {hst(now_ts())}")
+    print(f"Database: {config.DATABASE_URL}\n")
+    order = ["kalshi_series", "kalshi_active", "espn_nfl", "odds_api", "aaa", "gas_backfill", "settle"]
+    if not args.skip_scan:
+        order.insert(0, "kalshi_scan")
+    for name in order:
+        t0 = time.time()
+        res = jobs.run_job(name)
+        print(f"  {jobs.JOBS[name]['label']:<32} {time.time() - t0:5.1f}s  {res}")
+
+    print("\nOpen markets by board:")
+    rows = db.fetch_all(select(db.markets.c.category, func.count().label("n")).where(
+        db.markets.c.status.in_(("active", "open")), db.markets.c.close_ts > now_ts()).group_by(db.markets.c.category))
+    for r in sorted(rows, key=lambda r: -r["n"]):
+        print(f"  {r['category']:<24} {r['n']:>6}")
+
+    data = edges.compute(force=True)
+    nfl, gas = data["nfl"], data["gas"]
+    print(f"\nNFL game markets: {len(nfl['games'])} games")
+    for g in nfl["games"][:8]:
+        f = g["fair"]
+        teams = "  ".join(
+            f"{t['team']} bid/ask {fmt(t['yes_bid'])}/{fmt(t['yes_ask'])} fair {pct(t['fair'])}" for t in g["teams"])
+        print(f"  {g['title'][:40]:<40} {teams}  [{f['source'] if f else 'no fair yet'}]")
+
+    a = gas["aaa"]
+    print(f"\nAAA national average: {a['latest']} on {a['latest_date']}  trends: "
+          f"{ {k: a['trends'].get(k) for k in ('chg_1d', 'chg_3d', 'chg_7d', 'chg_14d', 'decelerating')} }")
+    for lad in gas["ladders"][:3]:
+        print(f"  Ladder {lad['event_ticker']} resolves {lad['resolution_date']}: implied median {lad['implied_median']} "
+              f"({lad['median_note']}), model {lad['model'].get('mu') or lad['model'].get('why')}")
+        for r in lad["rows"]:
+            print(f"     {str(r['label'])[:28]:<28} bid/ask {fmt(r['yes_bid'])}/{fmt(r['yes_ask'])}  fair YES {pct(r['fair_yes'])}")
+    cal = gas["calibration"]
+    print(f"  Calibration (Kalshi implied median vs AAA): {cal['market']}")
+    print(f"  Calibration (our model median vs AAA):      {cal['model']}")
+
+    print(f"\nTop edges: counts {data['counts']}")
+    items = [o for grp in data["groups"] for o in grp["items"]]
+    items.sort(key=lambda o: ({"S": 0, "G": 1, "W": 2, "P": 3}[o["tier"]], -(o.get("net_ev_pct") or -999)))
+    for o in items[:10]:
+        print(f"  [{o['tier']}] {o['subject'][:34]:<34} {o['side'].upper():<3} fair {pct(o['fair'])} maker {fmt(o['maker_price'])} "
+              f"edge {o['raw_edge_pts']} pts  net EV {o['net_ev_pct']}%  size {o['size']['contracts']} ct")
+    if items:
+        best = items[0]
+        print(f"\nFull math for the top row ({best['ticker']} {best['side'].upper()}):")
+        for line in best["math"]:
+            print(f"  - {line}")
+        print(f"  Reason: {best['reason']}")
+
+    print("\nData freshness:")
+    for f in jobs.freshness():
+        print(f"  {f['label']:<32} {f['state']:<6} last good {f['last_ok'] or 'never'}"
+              + (f"  ERROR: {f['last_error']}" if f["state"] == "error" else ""))
+    return 0
+
+
+def fmt(x):
+    return "--" if x is None else f"{100 * x:.0f}c"
+
+
+def pct(x):
+    return "--" if x is None else f"{100 * x:.1f}%"
+
+
+if __name__ == "__main__":
+    sys.exit(main())

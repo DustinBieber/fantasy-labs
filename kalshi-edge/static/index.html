@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" class="bg-ink-950">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0e10">
+<title>Kalshi Edge</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23dc2626'/><path d='M9 23V9h3v6l6-6h4l-7 7 7 7h-4l-6-6v6z' fill='white'/></svg>">
+</head>
+<body class="bg-ink-950 text-ink-100 antialiased min-h-screen">
+<header class="sm:sticky top-0 z-30 bg-ink-950/95 backdrop-blur border-b border-ink-800">
+  <div class="max-w-7xl mx-auto px-4 py-2 flex flex-wrap items-center gap-x-5 gap-y-2">
+    <div class="font-bold tracking-tight text-lg whitespace-nowrap">KALSHI <span class="text-red-500">EDGE</span>
+      <span class="ml-1 text-[10px] font-semibold uppercase tracking-wider text-ink-400 border border-ink-700 rounded px-1 py-0.5 align-middle">Phase 1 · paper</span></div>
+    <div id="topstats" class="grid grid-cols-4 gap-x-3 w-full sm:w-auto sm:flex sm:gap-x-5 text-[13px] sm:text-sm"></div>
+    <div class="grow hidden sm:block"></div>
+    <div id="clock" class="hidden sm:block text-xs text-ink-400 tabular-nums"></div>
+  </div>
+  <div class="max-w-7xl mx-auto px-4 pb-2">
+    <div id="fresh" class="flex flex-wrap gap-1 sm:gap-1.5 text-[11px] sm:text-xs"></div>
+  </div>
+  <nav id="nav" class="max-w-7xl mx-auto px-2 flex gap-1 overflow-x-auto no-scrollbar text-sm"></nav>
+</header>
+<main id="view" class="max-w-7xl mx-auto px-4 py-5 pb-24"></main>
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden"></div>
+<script src="/static/vendor/chart.umd.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
