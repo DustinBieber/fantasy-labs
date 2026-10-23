@@ -1,7 +1,6 @@
 import json
 
 import httpx
-import pytest
 
 from opshub.connectors import REGISTRY, ai_providers, get_connector, sync_keys
 from opshub.connectors.base import Connector
@@ -23,7 +22,7 @@ def test_modes():
     assert shopify.mode(demo_mode=False) == "disabled"
     live = get_connector("shopify", env={"SHOPIFY_SHOP": "x.myshopify.com", "SHOPIFY_ACCESS_TOKEN": "t"})
     assert live.mode(demo_mode=True) == "live"
-    assert get_connector("muse", env={}).mode(True) == "planned"
+    assert get_connector("muse", env={}).mode(True) == "demo"
 
 
 def test_lightspeed_quirks():
@@ -91,14 +90,6 @@ def test_shopify_live_paginates(monkeypatch):
     assert all(path == "/admin/api/2026-07/graphql.json" and tok == "tok" for path, tok, _ in calls)
 
 
-def test_unbuilt_live_sync_says_so():
-    from opshub.connectors.base import NotWiredYet
-
-    c = get_connector("lightspeed", env={"LIGHTSPEED_ACCOUNT_ID": "1", "LIGHTSPEED_ACCESS_TOKEN": "t"})
-    with pytest.raises(NotWiredYet):
-        c.pull(demo_mode=True)
-
-
 def _capture(monkeypatch, cls, response_json=None):
     seen = []
 
@@ -117,6 +108,9 @@ def test_notifiers_send(monkeypatch):
     seen = _capture(monkeypatch, TelegramConnector)
     TelegramConnector(env={"TELEGRAM_BOT_TOKEN": "abc", "TELEGRAM_CHAT_ID": "42"}).send("hi")
     assert seen[0].url.path == "/botabc/sendMessage" and json.loads(seen[0].content)["chat_id"] == "42"
+    seen.clear()
+    TelegramConnector(env={"TELEGRAM_BOT_TOKEN": "abc", "TELEGRAM_CHAT_ID": "42"}).send("x" * 9000, chat_id="7")
+    assert len(seen) == 3 and json.loads(seen[0].content)["chat_id"] == "7"  # split under the 4096 limit
 
     seen = _capture(monkeypatch, GoogleChatConnector)
     GoogleChatConnector(env={"GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k"}).send("hi")
@@ -130,6 +124,9 @@ def test_notifiers_send(monkeypatch):
     seen.clear()
     WhatsAppConnector(env={**env, "WHATSAPP_TEMPLATE": "ops_alert"}).send("hi")
     assert json.loads(seen[0].content)["template"]["name"] == "ops_alert"
+    seen.clear()
+    WhatsAppConnector(env={**env, "WHATSAPP_TEMPLATE": "ops_alert"}).send("reply", to="15550009")
+    assert json.loads(seen[0].content)["type"] == "text"  # replies are inside the 24h window: no template
 
 
 def test_ai_providers_parse_responses(monkeypatch):

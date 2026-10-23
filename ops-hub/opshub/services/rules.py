@@ -214,8 +214,11 @@ def billing_rules(session: Session, s: Settings, now: datetime) -> list[Finding]
 
 def run(session: Session, settings: Settings, now: datetime | None = None) -> dict:
     now = now or utcnow()
+    from .muse import inbox_findings
+
     findings = (order_rules(session, settings, now) + shipment_rules(session, settings, now)
-                + inventory_rules(session, settings, now) + billing_rules(session, settings, now))
+                + inventory_rules(session, settings, now) + billing_rules(session, settings, now)
+                + inbox_findings(session, settings, now))
     alerts = {a.dedupe_key: a for a in session.scalars(select(Alert))}
     stats = {"open": 0, "new": 0, "escalated": 0, "auto_resolved": 0}
     seen = set()

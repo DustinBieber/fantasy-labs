@@ -220,3 +220,46 @@ def upsert_invoice(session: Session, n: NInvoice, source: str) -> tuple[Invoice,
         inv.lines.append(InvoiceLine(charge_code=l.charge_code, description=l.description, qty=l.qty,
                                      rate=l.rate, amount=l.amount))
     return inv, True
+
+
+def invoice_from_text(text: str, settings, env, source_ref: str | None = None) -> NInvoice | None:
+    """Read a PDF invoice's text with the configured AI provider."""
+    from . import ai
+
+    prompt = ("This is the text of a 3PL warehouse invoice. Return JSON: {\"vendor\", \"number\", "
+              "\"invoice_date\": YYYY-MM-DD, \"period_start\": YYYY-MM-DD, \"period_end\": YYYY-MM-DD, \"total\", "
+              "\"lines\": [{\"charge_code\" (or null), \"description\", \"qty\", \"rate\", \"amount\"}]}. Numbers as "
+              f"plain decimals.\n\n\"\"\"\n{text[:15000]}\n\"\"\"")
+    data, _ = ai.complete_json(settings, prompt, env)
+    if not data or not data.get("number"):
+        return None
+    start, end = parse_date(str(data.get("period_start") or "")), parse_date(str(data.get("period_end") or ""))
+    if not (start and end):
+        return None
+    lines = [NInvoiceLine(charge_code=l.get("charge_code") or None, description=str(l.get("description") or ""),
+                          qty=_dec(l.get("qty")), rate=_dec(l.get("rate")), amount=_dec(l.get("amount")))
+             for l in data.get("lines") or []]
+    return NInvoice(vendor=str(data.get("vendor") or "Unknown 3PL"), number=str(data["number"]), period_start=start,
+                    period_end=end, invoice_date=parse_date(str(data.get("invoice_date") or "")),
+                    total=_dec(data.get("total")) if data.get("total") is not None else sum((l.amount for l in lines), ZERO),
+                    lines=lines, source_ref=source_ref)
+
+
+def derive_hazmat_activity(session: Session, vendor: str, charge_code: str, source: str = "extensiv") -> int:
+    """One activity row per shipped warehouse order that contains a hazmat SKU (per the product sheet)."""
+    from ..models import Order
+
+    added = 0
+    for o in session.scalars(select(Order).where(Order.source == source, Order.status == "shipped",
+                                                 Order.shipped_at.is_not(None))):
+        if not any(l.product and l.product.hazmat for l in o.lines):
+            continue
+        ref = f"order {o.external_id}"
+        day = o.shipped_at.date()
+        if session.scalar(select(WarehouseActivity).where(
+                WarehouseActivity.vendor == vendor, WarehouseActivity.charge_code == charge_code,
+                WarehouseActivity.activity_date == day, WarehouseActivity.reference == ref)) is None:
+            session.add(WarehouseActivity(vendor=vendor, charge_code=charge_code, activity_date=day, qty=Decimal(1),
+                                          reference=ref, source=source))
+            added += 1
+    return added

@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import InventoryLot, Location, Product, SaleLine, StockLevel
+from ..models import Forecast, InventoryLot, Location, Product, SaleLine, StockLevel
 
 
 def _locations(session: Session) -> list[Location]:
@@ -38,9 +38,18 @@ def sales_by(session: Session, since: datetime) -> dict[tuple[int, int], int]:
     return {(p, l): int(n or 0) for p, l, n in session.execute(q)}
 
 
+def forecasts(session: Session) -> dict[tuple[int, int | None], float]:
+    """Latest forecast units/day keyed by (product_id, location_id or None for all locations)."""
+    out: dict[tuple[int, int | None], float] = {}
+    for f in sorted(session.scalars(select(Forecast)), key=lambda f: f.as_of):
+        out[(f.product_id, f.location_id)] = float(f.units_per_day)
+    return out
+
+
 def sell_through(session: Session, days: int, now: datetime) -> list[dict]:
     """Per SKU over the last ``days``: sold / (sold + on hand), daily velocity and days of supply."""
     sold = sales_by(session, now - timedelta(days=days))
+    fc = forecasts(session)
     on_hand: dict[tuple[int, int], int] = {(s.product_id, s.location_id): s.on_hand
                                            for s in session.scalars(select(StockLevel))}
     locs = {l.id: l for l in session.scalars(select(Location))}
@@ -52,12 +61,16 @@ def sell_through(session: Session, days: int, now: datetime) -> list[dict]:
         per_loc = []
         for _, lid in sorted(keys, key=lambda k: locs[k[1]].code):
             s, oh = sold.get((p.id, lid), 0), on_hand.get((p.id, lid), 0)
-            per_loc.append(_st_row(locs[lid].code, s, oh, days))
+            r = _st_row(locs[lid].code, s, oh, days)
+            r["forecast_per_day"] = fc.get((p.id, lid))
+            per_loc.append(r)
         total_sold = sum(r["sold"] for r in per_loc)
         total_oh = sum(r["on_hand"] for r in per_loc)
         row = _st_row(None, total_sold, total_oh, days)
+        loc_fc = [r["forecast_per_day"] for r in per_loc if r["forecast_per_day"] is not None]
         row.update({"sku": p.sku, "name": p.name, "seasonal": p.seasonal, "season": p.season,
-                    "hazmat": p.hazmat, "by_location": per_loc})
+                    "hazmat": p.hazmat, "by_location": per_loc,
+                    "forecast_per_day": fc.get((p.id, None)) or (round(sum(loc_fc), 2) if loc_fc else None)})
         rows.append(row)
     return rows
 
@@ -152,6 +165,7 @@ def allocate(session: Session, sku: str, qty: int, *, location_code: str | None 
 def low_stock(session: Session, days: int, now: datetime, threshold_days: int) -> list[dict]:
     """Selling locations whose stock covers fewer than ``threshold_days`` at the current rate."""
     sold = sales_by(session, now - timedelta(days=days))
+    fc = forecasts(session)
     backup: dict[int, list[tuple[str, int]]] = defaultdict(list)  # stock that could replenish
     levels = list(session.scalars(select(StockLevel)))
     for s in levels:
@@ -160,14 +174,17 @@ def low_stock(session: Session, days: int, now: datetime, threshold_days: int) -
     out = []
     for s in levels:
         units = sold.get((s.product_id, s.location_id), 0)
-        if not units:
+        forecast = fc.get((s.product_id, s.location_id))
+        if not units and not forecast:
             continue
-        per_day = units / days
+        # Plan on the faster of recent sales and the forecast.
+        per_day = max(units / days, forecast or 0)
         cover = s.available / per_day
         if cover < threshold_days:
             out.append({"product_id": s.product_id, "sku": s.product.sku, "name": s.product.name,
                         "location_id": s.location_id, "location": s.location.code, "available": s.available,
                         "per_day": round(per_day, 2), "days_of_supply": round(cover, 1),
+                        "forecast_per_day": forecast,
                         "replenish_from": [{"location": c, "available": a} for c, a in backup[s.product_id]
                                            if c != s.location.code]})
     return sorted(out, key=lambda r: r["days_of_supply"])

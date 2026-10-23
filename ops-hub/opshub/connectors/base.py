@@ -79,6 +79,7 @@ class NOrder:
     required_by: datetime | None = None  # a deadline the system itself stores (e.g. Extensiv cancel date)
     ship_from: str | None = None  # location ref (see SyncBatch)
     order_type: str | None = None  # when the source knows (e.g. wholesale)
+    shipped_at: datetime | None = None
 
 
 @dataclass
@@ -224,7 +225,9 @@ class NDocument:
     text: str
     received_at: datetime | None = None
     sender: str | None = None
-    attachments: list[tuple[str, str]] = field(default_factory=list)  # (filename, text content)
+    attachments: list[tuple[str, str | bytes]] = field(default_factory=list)  # (filename, text or raw bytes)
+    # What the document is known to be, when its source says so (e.g. "muse" for the Muse inbox folder).
+    hint: str | None = None
 
 
 @dataclass
@@ -285,8 +288,11 @@ class Connector:
     def setting(self, key: str, default: str | None = None) -> str | None:
         return self.env.get(key) or default
 
+    def missing_settings(self) -> list[str]:
+        return [k for k in self.settings_keys if not self.env.get(k)]
+
     def is_configured(self) -> bool:
-        return bool(self.settings_keys) and all(self.env.get(k) for k in self.settings_keys)
+        return bool(self.settings_keys) and not self.missing_settings()
 
     def mode(self, demo_mode: bool) -> str:
         if self.planned:
@@ -321,7 +327,7 @@ class Connector:
             "category": self.category,
             "capabilities": list(self.capabilities),
             "settings_keys": list(self.settings_keys),
-            "missing_settings": [k for k in self.settings_keys if not self.env.get(k)],
+            "missing_settings": self.missing_settings(),
             "mode": self.mode(demo_mode),
             "pulls": self.pulls,
             "docs_url": self.docs_url,
@@ -336,6 +342,10 @@ class Notifier(Connector):
 
     def send(self, text: str) -> None:
         raise NotImplementedError
+
+    def send_ready(self) -> bool:
+        """Configured enough to send (a connector may be connected for reading but have no recipient)."""
+        return self.is_configured()
 
 
 class AIProvider(Connector):

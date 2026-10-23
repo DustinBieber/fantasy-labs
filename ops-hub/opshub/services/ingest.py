@@ -264,6 +264,7 @@ def _apply_orders(session, batch, source, r: Resolver, now, stats) -> None:
         o.number, o.reference, o.channel, o.customer_name = n.number, n.reference, n.channel, n.customer_name
         o.status, o.raw_status, o.placed_at, o.source_updated_at = n.status, n.raw_status, n.placed_at, n.updated_at
         o.notes, o.tags, o.attributes, o.system_deadline = n.notes, n.tags, n.attributes, n.required_by
+        o.shipped_at = n.shipped_at or o.shipped_at
         o.order_type = n.order_type or "standard"
         loc = r.location(n.ship_from)
         o.ship_from_location_id = loc.id if loc else None

@@ -68,8 +68,13 @@ class Settings:
     database_url: str = "sqlite:///opshub.db"
     # Connectors without credentials serve built-in sample data instead of being skipped.
     demo_mode: bool = True
-    # Business timezone: "need by Nov 3" means end of Nov 3 here.
-    timezone: str = "America/New_York"
+    # Business timezone: "need by Nov 3" means end of Nov 3 here; daily jobs run on this clock.
+    timezone: str = "Pacific/Honolulu"
+    # Background work while the server runs: sync every N minutes (0 = off) and daily jobs at HH:MM.
+    scheduler: bool = True
+    sync_interval_minutes: int = 15
+    digest_time: str = "07:00"
+    muse_export_time: str = "06:00"
 
     deadline_warn_hours: int = 72
     deadline_urgent_hours: int = 24
@@ -104,6 +109,10 @@ class Settings:
             database_url=e.get("DATABASE_URL") or d.database_url,
             demo_mode=_bool(e.get("DEMO_MODE"), d.demo_mode),
             timezone=e.get("BUSINESS_TIMEZONE") or d.timezone,
+            scheduler=_bool(e.get("OPSHUB_SCHEDULER"), d.scheduler),
+            sync_interval_minutes=i("SYNC_INTERVAL_MINUTES", d.sync_interval_minutes),
+            digest_time=e.get("DIGEST_TIME") or d.digest_time,
+            muse_export_time=e.get("MUSE_EXPORT_TIME") or d.muse_export_time,
             deadline_warn_hours=i("DEADLINE_WARN_HOURS", d.deadline_warn_hours),
             deadline_urgent_hours=i("DEADLINE_URGENT_HOURS", d.deadline_urgent_hours),
             order_stale_days=i("ORDER_STALE_DAYS", d.order_stale_days),

@@ -1,4 +1,4 @@
-"""Emails and files: 3PL invoices (CSV) and carrier/forwarder status updates."""
+"""Emails and files: 3PL invoices (CSV, Excel, PDF), Muse handoff files, carrier/forwarder updates."""
 from __future__ import annotations
 
 import re
@@ -10,7 +10,7 @@ from ..config import Settings
 from ..connectors.base import NDocument, NTrackingUpdate
 from ..models import ProcessedDocument
 from ..timeutil import end_of_day_utc, utcnow
-from . import ai, billing, shipments, signals
+from . import ai, billing, files, muse, shipments, signals
 
 SHIPPING_WORDS = re.compile(r"\b(?:tracking|shipment|container|pro\b|bol\b|freight|eta\b|pickup|delivery|"
                             r"interline|drayage|consignment|waybill)", re.IGNORECASE)
@@ -18,17 +18,25 @@ SHIPPING_WORDS = re.compile(r"\b(?:tracking|shipment|container|pro\b|bol\b|freig
 
 def process(session: Session, doc: NDocument, source: str, settings: Settings,
             env: dict[str, str] | None = None) -> str:
-    """Returns what the document turned out to be: invoice | tracking_update | unmatched | ignored | seen."""
+    """Returns what the document turned out to be: invoice | invoice_unread | tracking_update | muse |
+    unmatched | ignored | seen."""
     if session.scalar(select(ProcessedDocument).where(ProcessedDocument.source == source,
                                                       ProcessedDocument.external_id == doc.external_id)):
         return "seen"
     kind, summary = "ignored", None
-    for filename, content in doc.attachments:
-        if filename.lower().endswith(".csv"):
-            n = billing.parse_invoice_csv(content, source_ref=f"{source}:{doc.external_id}:{filename}")
-            if n:
-                inv, _ = billing.upsert_invoice(session, n, source)
-                kind, summary = "invoice", f"Invoice {n.number} from {n.vendor}, ${n.total}"
+    if doc.hint == "muse":
+        kind = muse.import_document(session, doc, settings, env)
+        summary = f"Muse handoff: {doc.title}"
+    else:
+        for filename, content in doc.attachments:
+            n = _read_invoice(filename, content, f"{source}:{doc.external_id}:{filename}", settings, env)
+            if n is None:
+                continue
+            if n == "unread":
+                kind, summary = "invoice_unread", f"{filename}: PDF invoice needs an AI key (or a CSV copy) to read"
+                continue
+            billing.upsert_invoice(session, n, source)
+            kind, summary = "invoice", f"Invoice {n.number} from {n.vendor}, ${n.total}"
     if kind == "ignored":
         text = f"{doc.title}\n{doc.text}"
         received = doc.received_at or utcnow()
@@ -43,8 +51,29 @@ def process(session: Session, doc: NDocument, source: str, settings: Settings,
         elif SHIPPING_WORDS.search(text):
             kind, summary = "unmatched", doc.title
     session.add(ProcessedDocument(source=source, external_id=doc.external_id, kind=kind,
-                                  summary=summary or doc.title[:300]))
+                                  summary=(summary or doc.title)[:300]))
     return kind
+
+
+def _read_invoice(filename: str, content, source_ref: str, s: Settings, env):
+    low = filename.lower()
+    if low.endswith((".csv", ".tsv", ".xlsx", ".xlsm")):
+        try:
+            rows = files.read_table(filename, content)
+        except Exception:
+            return None
+        return billing.parse_invoice_csv(files.table_to_csv(rows), source_ref=source_ref)
+    if low.endswith(".pdf") and isinstance(content, bytes):
+        try:
+            text = files.pdf_text(content)
+        except Exception:
+            return None
+        if "invoice" not in text.lower():
+            return None
+        if not ai.configured_providers(s, env):
+            return "unread"
+        return billing.invoice_from_text(text, s, env, source_ref) or "unread"
+    return None
 
 
 def _tracking_update(session: Session, text: str, received, settings: Settings, env) -> NTrackingUpdate | None:

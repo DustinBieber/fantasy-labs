@@ -24,9 +24,9 @@ from . import db
 from .config import Settings, get_settings
 from .connectors import all_connectors, get_connector
 from .connectors.base import NotWiredYet, NTrackingUpdate
-from .models import (ACTIVE_ORDER_STATUSES, OPEN_SHIPMENT_STATUSES, Alert, Invoice, Notification, Order,
-                     RateCardEntry, Shipment, SyncRun)
-from .services import billing, calendar, inventory, notify, orders, shipments, sync
+from .models import (ACTIVE_ORDER_STATUSES, OPEN_SHIPMENT_STATUSES, Alert, HandoffFile, InboxItem, Invoice,
+                     KeyValue, Notification, Order, RateCardEntry, Shipment, SyncRun)
+from .services import billing, calendar, chatops, inventory, jobs, notify, orders, shipments, sync
 from .timeutil import end_of_day_utc, iso, parse_date, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
@@ -53,24 +53,31 @@ class InvoiceStatusIn(BaseModel):
     status: str
 
 
+class ShipmentIn(BaseModel):
+    reference: str
+    direction: str = "inbound"
+    mode: str = "ltl"
+    carrier: str
+    agent: str | None = None
+    tracking_ref: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    eta: str | None = None  # YYYY-MM-DD
+    hazmat: bool = False
+    un_numbers: list[str] = []
+    priority: bool = False
+    order_number: str | None = None
+    notes: str | None = None
+
+
 # --- app -------------------------------------------------------------------------
-
-def _scheduler(stop: threading.Event, minutes: int) -> None:
-    while not stop.wait(minutes * 60):
-        try:
-            with db.session_scope() as session:
-                sync.sync_all(session, get_settings())
-        except Exception:
-            log.exception("Scheduled sync failed")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.create_all()
     stop = threading.Event()
-    minutes = int(os.environ.get("SYNC_INTERVAL_MINUTES") or 0)
-    if minutes > 0:
-        threading.Thread(target=_scheduler, args=(stop, minutes), daemon=True).start()
+    if get_settings().scheduler:
+        threading.Thread(target=jobs.run_forever, args=(stop,), daemon=True, name="opshub-scheduler").start()
     yield
     stop.set()
 
@@ -82,7 +89,8 @@ def create_app() -> FastAPI:
     async def basic_auth(request: Request, call_next):
         """When OPSHUB_PASSWORD is set, every page and API call needs HTTP Basic auth."""
         password = os.environ.get("OPSHUB_PASSWORD")
-        if password and request.url.path != "/healthz":
+        # Webhooks authenticate with the sender's signature instead.
+        if password and request.url.path != "/healthz" and not request.url.path.startswith("/webhooks/"):
             user = os.environ.get("OPSHUB_USER", "ops")
             header = request.headers.get("authorization", "")
             ok = False
@@ -97,6 +105,7 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     app.include_router(router_api())
+    app.include_router(router_webhooks())
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/", include_in_schema=False)
@@ -171,6 +180,10 @@ def router_api():
         a = session.get(Alert, alert_id) or _404("alert")
         new = {"ack": "acked", "dismiss": "dismissed", "reopen": "open"}.get(action) or _400("unknown action")
         a.status = new
+        if a.dedupe_key.startswith("inbox:") and action == "dismiss":  # a done Muse task/alert
+            item = session.get(InboxItem, int(a.dedupe_key.split(":")[1]))
+            if item:
+                item.status = "done"
         session.commit()
         return {"id": a.id, "status": a.status}
 
@@ -179,32 +192,7 @@ def router_api():
     @r.get("/orders")
     def list_orders(view: str = "watch", q: str | None = None, session: Session = Depends(db.get_db),
                     s: Settings = Depends(settings_dep)):
-        now = utcnow()
-        alerted = {a.subject_id for a in session.scalars(select(Alert).where(Alert.subject_type == "order",
-                                                                              Alert.status == "open"))}
-        rows = session.scalars(select(Order).where(Order.linked_order_id.is_(None)).options(
-            selectinload(Order.lines), selectinload(Order.warehouse_records), selectinload(Order.ship_from)))
-        out = []
-        for o in rows:
-            d = orders.to_dict(o, now)
-            active = d["status"] in ACTIVE_ORDER_STATUSES
-            if view == "watch" and not (active and (o.required_by or o.note_flags or o.is_hazmat or o.id in alerted
-                                                    or o.order_type != "standard")):
-                continue
-            if view == "active" and not active:
-                continue
-            if view in ("priority", "subscription", "seasonal", "wholesale") and (o.order_type != view or not active):
-                continue
-            if view == "hazmat" and not (o.is_hazmat and active):
-                continue
-            if q and q.lower() not in f"{o.number} {o.customer_name} {o.notes}".lower():
-                continue
-            d["has_alert"] = o.id in alerted
-            out.append(d)
-        far = "9999"
-        out.sort(key=lambda d: (d["required_by"] or far, d["placed_at"] or far) if view != "all"
-                 else (d["placed_at"] or ""), reverse=view == "all")
-        return out[:500]
+        return orders.list_view(session, utcnow(), view, q)
 
     @r.get("/orders/{order_id}")
     def get_order(order_id: int, session: Session = Depends(db.get_db)):
@@ -267,6 +255,102 @@ def router_api():
         session.commit()
         sync.run_rules(session, s)
         return shipments.detail(session.get(Shipment, shipment_id), utcnow(), s.shipment_stale_days)
+
+    @r.post("/shipments")
+    def create_shipment(body: ShipmentIn, session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
+        """Book freight by hand (carriers that only email or phone): it is then tracked like any other."""
+        from .connectors.base import NShipment
+        from .services.ingest import Resolver
+
+        if session.scalar(select(Shipment).where(Shipment.reference == body.reference)):
+            _400("a shipment with that reference exists")
+        eta = parse_date(body.eta)
+        n = NShipment(reference=body.reference, direction=body.direction, mode=body.mode, carrier_name=body.carrier,
+                      agent_name=body.agent, tracking_ref=body.tracking_ref, origin=body.origin,
+                      destination=body.destination, eta=end_of_day_utc(eta, s.timezone) if eta else None,
+                      hazmat=body.hazmat, un_numbers=body.un_numbers, priority=body.priority,
+                      order_number=body.order_number, notes=body.notes, booked_at=utcnow())
+        shp, _ = shipments.upsert_shipment(session, n, "manual", True, Resolver(session, "manual").location)
+        session.commit()
+        sync.run_rules(session, s)
+        return shipments.detail(shp, utcnow(), s.shipment_stale_days)
+
+    # imports, inbox, handoffs, jobs
+
+    @r.post("/import/rq")
+    async def import_rq(request: Request, filename: str, session: Session = Depends(db.get_db),
+                        s: Settings = Depends(settings_dep)):
+        """Upload an RQ report export (CSV/XLSX) as the raw request body."""
+        from .connectors import get_connector
+        from .services import ingest
+
+        content = await request.body()
+        if not content:
+            _400("empty file")
+        conn = get_connector("iqmetrix_rq")
+        batch, report = conn.import_files([(filename, content)], s.timezone)
+        if not (batch.stock or batch.sales):
+            return {"imported": False, "files": report}
+        stats = ingest.apply_batch(session, batch, "iqmetrix_rq", s)
+        session.add(SyncRun(connector="iqmetrix_rq", mode="upload", status="ok", stats=stats, finished_at=utcnow()))
+        session.commit()
+        sync.run_rules(session, s)
+        return {"imported": True, "files": report, "stats": stats}
+
+    @r.get("/inbox")
+    def inbox(status: str = "open", session: Session = Depends(db.get_db)):
+        q = select(InboxItem).order_by(InboxItem.received_at.desc())
+        if status != "all":
+            q = q.where(InboxItem.status == status)
+        return [{"id": i.id, "source": i.source, "kind": i.kind, "severity": i.severity, "title": i.title,
+                 "detail": i.detail, "due": i.due.isoformat() if i.due else None, "status": i.status,
+                 "subject_type": i.subject_type, "subject_id": i.subject_id, "file": i.file_name,
+                 "received_at": iso(i.received_at)} for i in session.scalars(q.limit(200))]
+
+    @r.post("/inbox/{item_id}/done")
+    def inbox_done(item_id: int, session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
+        item = session.get(InboxItem, item_id) or _404("inbox item")
+        item.status = "done"
+        session.commit()
+        sync.run_rules(session, s)
+        return {"id": item.id, "status": item.status}
+
+    @r.get("/handoffs")
+    def handoffs(partner: str = "muse", session: Session = Depends(db.get_db)):
+        rows = session.scalars(select(HandoffFile).where(HandoffFile.partner == partner)
+                               .order_by(HandoffFile.id.desc()).limit(60))
+        return [{"id": h.id, "direction": h.direction, "name": h.name, "location": h.location, "summary": h.summary,
+                 "created_at": iso(h.created_at)} for h in rows]
+
+    @r.get("/jobs")
+    def jobs_status(session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
+        import json as _json
+
+        out = []
+        for name in jobs.JOBS:
+            row = session.get(KeyValue, f"job:{name}:last")
+            out.append({"name": name, "last": _json.loads(row.value) if row else None})
+        return {"scheduler": s.scheduler, "sync_interval_minutes": s.sync_interval_minutes,
+                "digest_time": s.digest_time, "muse_export_time": s.muse_export_time, "timezone": s.timezone,
+                "jobs": out}
+
+    @r.post("/jobs/{name}")
+    def run_job(name: str, session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
+        if name not in jobs.JOBS:
+            _404("job")
+        try:
+            return {"job": name, "result": jobs.run_job(session, name, s)}
+        except NotWiredYet as exc:
+            raise HTTPException(501, str(exc))
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(502, f"{name} failed: {exc}")
+
+    @r.get("/google/status")
+    def google_status():
+        from .connectors import google_auth
+
+        return {"method": google_auth.method(os.environ), "requirement": google_auth.AUTH_REQUIREMENT}
 
     # billing
 
@@ -347,11 +431,8 @@ def router_api():
 
     @r.post("/digest")
     def digest_send(session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
-        text = notify.digest_text(session)
-        channels = [c.strip() for c in (os.environ.get("DIGEST_CHANNELS") or "google_chat,telegram").split(",")]
-        sent = [n.channel + ":" + n.status for c in channels if (n := notify.deliver(session, s, c, text))]
-        session.commit()
-        return {"sent": sent, "text": text}
+        result = jobs.run_job(session, "digest", s)
+        return {**result, "text": notify.digest_text(session)}
 
     @r.get("/calendar/events")
     def calendar_events(days: int = 30, session: Session = Depends(db.get_db)):
@@ -359,15 +440,7 @@ def router_api():
 
     @r.post("/calendar/publish")
     def calendar_publish(session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
-        events = calendar.build_events(session, utcnow())
-        conn = get_connector("google_calendar")
-        if conn.mode(s.demo_mode) != "live":
-            return {"published": 0, "mode": conn.mode(s.demo_mode), "would_publish": len(events)}
-        try:
-            conn.push_events(events)
-        except NotWiredYet as exc:
-            raise HTTPException(501, str(exc))
-        return {"published": len(events), "mode": "live"}
+        return jobs.run_job(session, "calendar", s)
 
     # exports (CSV, e.g. for a Google Sheets import)
 
@@ -389,7 +462,7 @@ def router_api():
             header = ["sku", "location", "lot_number", "received_on", "best_by", "days_left", "qty", "at_risk_units"]
             rows = [[x[k] for k in header] for x in data]
         elif name == "watchlist":
-            data = list_orders("watch", None, session, s)
+            data = orders.list_view(session, now, "watch")
             header = ["number", "customer", "status", "order_type", "required_by", "note_flags", "notes"]
             rows = [[x["number"], x["customer"], x["status"], x["order_type"], x["required_by"],
                      "; ".join(x["note_flags"]), (x["notes"] or "").replace("\n", " ")] for x in data]
@@ -406,6 +479,45 @@ def router_api():
         w.writerows(rows)
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{name}-{now:%Y%m%d}.csv"'})
+
+    return r
+
+
+def router_webhooks():
+    import hashlib
+    import hmac
+
+    from fastapi import APIRouter
+
+    r = APIRouter(prefix="/webhooks")
+
+    @r.get("/whatsapp", response_class=PlainTextResponse)
+    def whatsapp_verify(request: Request):
+        """Meta's one-time webhook verification handshake."""
+        p = request.query_params
+        token = os.environ.get("WHATSAPP_VERIFY_TOKEN")
+        if token and p.get("hub.mode") == "subscribe" and secrets.compare_digest(p.get("hub.verify_token", ""), token):
+            return p.get("hub.challenge", "")
+        raise HTTPException(403, "verification failed")
+
+    @r.post("/whatsapp")
+    async def whatsapp_inbound(request: Request, session: Session = Depends(db.get_db),
+                               s: Settings = Depends(settings_dep)):
+        raw = await request.body()
+        secret = os.environ.get("WHATSAPP_APP_SECRET")
+        if secret:
+            expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+            if not secrets.compare_digest(request.headers.get("x-hub-signature-256", ""), expected):
+                raise HTTPException(401, "bad signature")
+        elif os.environ.get("WHATSAPP_ALLOW_UNSIGNED", "").lower() not in ("1", "true", "yes"):
+            raise HTTPException(503, "set WHATSAPP_APP_SECRET to accept WhatsApp webhooks")
+        import json as _json
+
+        replied = chatops.handle_whatsapp(session, s, _json.loads(raw or b"{}"))
+        session.commit()
+        if replied:
+            sync.run_rules(session, s)
+        return {"ok": True, "replied": replied}
 
     return r
 

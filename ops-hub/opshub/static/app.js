@@ -116,13 +116,14 @@ async function renderOverview(view) {
 }
 
 function alertItem(a) {
-  const openable = ["order", "shipment", "invoice", "lot", "product", "standing_order"].includes(a.subject_type);
+  const openable = ["order", "shipment", "invoice", "lot", "product", "standing_order", "inbox"].includes(a.subject_type);
+  const isTask = a.kind.endsWith("_task");
   return `<li class="alert"><span class="dot ${a.severity}" aria-label="${esc(a.severity)}"></span>
     <div class="body"><div class="title">${esc(a.title)}</div><div class="detail">${esc(a.detail)}</div></div>
     <div class="actions">
       ${openable ? `<button class="btn small" data-subject="${esc(a.subject_type)}" data-id="${a.subject_id}">Open</button>` : ""}
       <button class="btn small" data-alert="${a.id}" data-action="ack">Ack</button>
-      <button class="btn small ghost" data-alert="${a.id}" data-action="dismiss">Dismiss</button>
+      <button class="btn small ghost" data-alert="${a.id}" data-action="dismiss">${isTask ? "Done" : "Dismiss"}</button>
     </div></li>`;
 }
 
@@ -130,6 +131,7 @@ function openSubject(type, id) {
   if (type === "order") return openOrder(id);
   if (type === "shipment") return openShipment(id);
   if (type === "invoice") { state.invoiceId = id; location.hash = "#billing"; return; }
+  if (type === "inbox") { location.hash = "#connectors"; return; }
   state.invTab = type === "lot" ? "lots" : type === "standing_order" ? "planner" : "sell";
   location.hash = "#inventory";
 }
@@ -200,6 +202,9 @@ async function openOrder(id) {
     ${o.warehouse.map((w) => `<h3 style="margin-top:18px">Warehouse record (${esc(w.source)})</h3>
       <dl class="kv"><dt>Number</dt><dd>${esc(w.number)}</dd><dt>Status</dt><dd>${esc(w.status)} <span class="muted">(${esc(w.raw_status)})</span></dd>
       <dt>Location</dt><dd>${esc(w.ship_from || "-")}</dd>${w.notes ? `<dt>Notes</dt><dd>${esc(w.notes)}</dd>` : ""}</dl>`).join("")}
+    ${(o.external_notes || []).length ? `<h3 style="margin-top:18px">Notes from other tools</h3>
+      ${o.external_notes.map((n) => `<p style="margin:6px 0"><span class="chip">${esc(n.source)}</span> ${esc(n.note)}
+        <span class="small muted">${fmtDateTime(n.at)}</span></p>`).join("")}` : ""}
     ${ai}
     <h3 style="margin-top:18px">Items</h3>
     ${table(["SKU", "Item", { label: "Qty", cls: "num" }, { label: "Fulfilled", cls: "num" }], o.lines.map((l) =>
@@ -218,6 +223,18 @@ async function renderInventory(view) {
   const exp = (name) => { $("#inv-export", view).innerHTML = `<a class="btn small" href="/api/export/${name}.csv">Export CSV</a>`; };
   if (state.invTab === "stock") {
     exp("stock");
+    $("#inv-export", view).insertAdjacentHTML("afterbegin", `<label class="btn small" style="margin-right:6px">Import RQ report
+      <input id="rq-file" type="file" accept=".csv,.tsv,.xlsx,.xlsm" hidden></label>`);
+    $("#rq-file", view).addEventListener("change", async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const res = await fetch(`/api/import/rq?filename=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
+      const r = await res.json();
+      const info = (r.files || []).map((x) => `${x.file}: ${x.kind}${x.stock_rows ? `, ${x.stock_rows} stock rows` : ""}${x.sales_lines ? `, ${x.sales_lines} sales lines` : ""}`).join("; ");
+      const zeroed = r.stats && r.stats.stock_zeroed ? ` ${r.stats.stock_zeroed} SKUs missing from the report were set to 0 at those stores.` : "";
+      toast(r.imported ? `Imported. ${info}.${zeroed}` : `Nothing imported. ${info || r.detail || ""}`);
+      render();
+    });
     const m = await api("/inventory/stock");
     body.innerHTML = `<div class="card">${table(["SKU", "Item", ...m.locations.map((l) => ({ label: l.code, cls: "num" })),
       { label: "Total", cls: "num" }, { label: "Available", cls: "num" }], m.rows.map((r) => `<tr>
@@ -230,11 +247,14 @@ async function renderInventory(view) {
     const st = await api("/inventory/sell-through");
     body.innerHTML = `<p class="muted small">Last ${st.days} days. Sell-through = sold / (sold + on hand). Click a row for locations.</p>
       <div class="card">${table(["SKU", "Item", { label: "Sold", cls: "num" }, { label: "On hand", cls: "num" }, "Sell-through",
-        { label: "Per day", cls: "num" }, { label: "Days of supply", cls: "num" }], st.rows.flatMap((r) => [
+        { label: "Per day", cls: "num" }, { label: "Forecast/day", cls: "num" }, { label: "Days of supply", cls: "num" }], st.rows.flatMap((r) => [
         `<tr class="click" data-sku="${esc(r.sku)}"><td class="mono">${esc(r.sku)}</td><td>${esc(r.name)} ${r.seasonal ? `<span class="chip">${esc(r.season || "seasonal")}</span>` : ""}</td>
-          <td class="num">${r.sold}</td><td class="num">${r.on_hand}</td>${stCell(r)}<td class="num">${r.per_day}</td>${dosCell(r)}</tr>`,
+          <td class="num">${r.sold}</td><td class="num">${r.on_hand}</td>${stCell(r)}<td class="num">${r.per_day}</td>
+          <td class="num ${r.forecast_per_day == null ? "zero" : ""}">${r.forecast_per_day ?? "-"}</td>${dosCell(r)}</tr>`,
         ...r.by_location.map((l) => `<tr data-parent="${esc(r.sku)}" hidden><td></td><td class="muted">${esc(l.location)}</td>
-          <td class="num">${l.sold}</td><td class="num">${l.on_hand}</td>${stCell(l)}<td class="num">${l.per_day}</td>${dosCell(l)}</tr>`)]))}</div>`;
+          <td class="num">${l.sold}</td><td class="num">${l.on_hand}</td>${stCell(l)}<td class="num">${l.per_day}</td>
+          <td class="num ${l.forecast_per_day == null ? "zero" : ""}">${l.forecast_per_day ?? "-"}</td>${dosCell(l)}</tr>`)]))}</div>
+      <p class="muted small">Forecasts come from Muse. Low-stock alerts plan on the faster of recent sales and the forecast.</p>`;
     body.querySelectorAll("[data-sku]").forEach((tr) => tr.addEventListener("click", () =>
       body.querySelectorAll(`[data-parent="${CSS.escape(tr.dataset.sku)}"]`).forEach((x) => { x.hidden = !x.hidden; })));
   } else if (state.invTab === "lots") {
@@ -295,7 +315,8 @@ async function renderFreight(view) {
   const rows = await api(`/shipments?status=${state.shipView}`);
   view.innerHTML = `<div class="section-head"><h2>Freight & shipments</h2>
       ${pills([["open", "In transit"], ["all", "All"]], state.shipView, "shipview")}
-      <div class="grow"></div><a class="btn small" href="/api/export/shipments.csv">Export CSV</a></div>
+      <div class="grow"></div><button class="btn small" id="book-ship">Book shipment</button>
+      <a class="btn small" href="/api/export/shipments.csv">Export CSV</a></div>
     <div class="card">${table(["Reference", "Type", "Current carrier / agent", "Tracking", "Status", "ETA", "Last update"],
       rows.map((s) => `<tr class="click" data-shipment="${s.id}">
         <td><b>${esc(s.reference)}</b>${s.hazmat ? ` <span class="chip warn">hazmat${s.un_numbers.length ? " " + esc(s.un_numbers.join(", ")) : ""}</span>` : ""}
@@ -310,6 +331,43 @@ async function renderFreight(view) {
         <td class="${s.stale ? "t-warn" : ""}">${rel(s.last_event_at)}</td></tr>`), "No shipments.")}</div>`;
   view.querySelectorAll("[data-shipment]").forEach((tr) => tr.addEventListener("click", () => openShipment(Number(tr.dataset.shipment))));
   view.querySelectorAll("[data-shipview]").forEach((b) => b.addEventListener("click", () => { state.shipView = b.dataset.shipview; render(); }));
+  $("#book-ship", view).addEventListener("click", openBooking);
+}
+
+function openBooking() {
+  openDrawer("Book a shipment", `<p class="muted small" style="margin-top:0">For freight booked by phone or email. Updates that quote
+    the tracking/PRO/BOL number (email, WhatsApp, Telegram) will attach to it, and handoffs to new carriers start a new leg.</p>
+    <form id="book" class="form-grid">
+      <label class="field">Reference<input name="reference" required placeholder="PO, BOL or your own ref"></label>
+      <label class="field">Direction<select name="direction"><option>inbound</option><option>outbound</option><option>transfer</option></select></label>
+      <label class="field">Mode<select name="mode">${["ltl", "ftl", "parcel", "ocean", "air", "courier"].map((m) => `<option>${m}</option>`).join("")}</select></label>
+      <label class="field">Carrier<input name="carrier" required></label>
+      <label class="field">Agent / forwarder<input name="agent"></label>
+      <label class="field">Tracking / PRO / BOL<input name="tracking_ref"></label>
+      <label class="field">From<input name="origin"></label>
+      <label class="field">To<input name="destination"></label>
+      <label class="field">ETA<input name="eta" type="date"></label>
+      <label class="field">Order #<input name="order_number"></label>
+      <label class="field">UN numbers<input name="un_numbers" placeholder="UN3480, UN1950"></label>
+      <label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" name="hazmat"> Hazmat</label>
+      <label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" name="priority"> Priority</label>
+      <label class="field" style="grid-column:1/-1">Notes<input name="notes"></label>
+      <button class="btn primary">Save shipment</button>
+    </form>`);
+  $("#book").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries([...fd].filter(([k, v]) => v !== "" && k !== "hazmat" && k !== "priority" && k !== "un_numbers"));
+    body.hazmat = fd.has("hazmat");
+    body.priority = fd.has("priority");
+    body.un_numbers = (fd.get("un_numbers") || "").split(",").map((x) => x.trim()).filter(Boolean);
+    try {
+      const shp = await post("/shipments", body);
+      toast(`Booked ${shp.reference}`);
+      await openShipment(shp.id);
+      render();
+    } catch (err) { toast(err.message); }
+  });
 }
 
 const SHIP_STATUSES = ["picked_up", "in_transit", "at_terminal", "out_for_delivery", "delivered", "exception"];
@@ -436,6 +494,7 @@ function modeLabel(c) {
   if (c.mode === "live") return ["live", "Live"];
   if (c.mode === "planned") return ["planned", "Planned"];
   if (c.mode === "disabled") return ["disabled", "Not set up"];
+  if (c.key === "iqmetrix_rq") return ["demo", "Demo data · upload works"];
   if (c.pulls) return ["demo", "Demo data"];
   if (c.category === "ai") return ["demo", "Not set up: rules only"];
   if (c.capabilities.includes("notify")) return ["demo", "Not set up: outbox only"];
@@ -443,14 +502,36 @@ function modeLabel(c) {
 }
 
 async function renderConnectors(view) {
-  const [conns, notes, events, digest] = await Promise.all([api("/connectors"), api("/notifications?limit=40"),
-    api("/calendar/events"), api("/digest")]);
+  const [conns, notes, events, digest, jobsInfo, handoffs, inbox, google] = await Promise.all([api("/connectors"),
+    api("/notifications?limit=40"), api("/calendar/events"), api("/digest"), api("/jobs"), api("/handoffs?partner=muse"),
+    api("/inbox?status=open"), api("/google/status")]);
   const groups = Object.keys(CATEGORY).map((cat) => [cat, conns.filter((c) => c.category === cat)]).filter(([, l]) => l.length);
   view.innerHTML = `
     <p class="muted" style="margin-top:0">Connectors without credentials serve sample data so you can try everything. Put credentials
       in <code>.env</code> (see <code>.env.example</code>) and restart to go live.</p>
+    <div class="card pad" style="margin-bottom:8px">${google.method
+      ? `<b class="t-ok">Google connected</b> <span class="muted">(${esc(google.method === "oauth" ? "Google account login" : "service account")})</span>`
+      : `<b>Google not connected.</b> <span class="muted">Sheets, Drive, Gmail, Calendar, RQ files and Muse need it. Set
+         <code>GOOGLE_OAUTH_CLIENT_ID</code>/<code>GOOGLE_OAUTH_CLIENT_SECRET</code>, then run <code>python -m opshub google-login</code>
+         (or set <code>GOOGLE_SERVICE_ACCOUNT_JSON</code>). See docs/SETUP.md.</span>`}</div>
     ${groups.map(([cat, list]) => `<div class="section-head"><h3>${esc(CATEGORY[cat])}</h3></div>
       <div class="conn-grid">${list.map(connCard).join("")}</div>`).join("")}
+    <div class="section-head"><h2>Muse handoff</h2><span class="muted small">Daily brief out at ${esc(jobsInfo.muse_export_time)}
+      (${esc(jobsInfo.timezone)}); Muse's files are read on every sync</span><div class="grow"></div>
+      <button class="btn small" data-job="muse_export">Send to Muse now</button></div>
+    <div class="card">${table(["From Muse (open)", "Kind", "Due", ""], inbox.filter((i) => i.source === "muse").map((i) => `<tr>
+      <td><b>${esc(i.title)}</b><div class="small muted">${esc((i.detail || "").slice(0, 200))}</div></td>
+      <td><span class="chip ${i.kind === "alert" ? i.severity : ""}">${esc(i.kind)}</span></td><td>${i.due ? fmtDate(i.due) : "-"}</td>
+      <td><button class="btn small" data-done="${i.id}">Done</button></td></tr>`), "Nothing open from Muse.")}</div>
+    <div class="card" style="margin-top:12px">${table(["When", "Direction", "File", "Summary"], handoffs.map((h) => `<tr>
+      <td class="small">${fmtDateTime(h.created_at)}</td><td>${h.direction === "out" ? "to Muse" : "from Muse"}</td>
+      <td class="mono">${esc(h.name)}</td><td class="small muted">${esc(h.summary || "")}</td></tr>`), "No files exchanged yet.")}</div>
+    <div class="section-head"><h2>Schedule</h2><span class="muted small">${jobsInfo.scheduler ? `Syncing every ${jobsInfo.sync_interval_minutes} min;
+      digest at ${esc(jobsInfo.digest_time)}` : "Scheduler is off (OPSHUB_SCHEDULER=off)"}</span></div>
+    <div class="card">${table(["Job", "Last run", "Result", ""], jobsInfo.jobs.map((j) => `<tr><td class="mono">${esc(j.name)}</td>
+      <td class="small">${j.last ? fmtDateTime(j.last.at) : "never"}</td>
+      <td class="small muted">${j.last ? esc(JSON.stringify(j.last.result).slice(0, 160)) : ""}</td>
+      <td><button class="btn small" data-job="${esc(j.name)}">Run now</button></td></tr>`))}</div>
     <div class="section-head"><h2>Calendar preview</h2><span class="muted small">What Google Calendar will get: next 30 days</span></div>
     <div class="card">${table(["Date", "Event", { label: "Details", cls: "hide-sm" }], events.map((e) => `<tr>
       <td>${fmtDate(e.date, { weekday: "short" })}</td><td>${esc(e.summary)}</td><td class="notes hide-sm">${esc(e.description)}</td></tr>`),
@@ -468,6 +549,19 @@ async function renderConnectors(view) {
       const r = await post(`/connectors/${b.dataset.sync}/sync`);
       toast(`${b.dataset.sync}: ${r.status}${r.error ? " - " + r.error.split("\n")[0] : ""}`);
     } finally { render(); }
+  }));
+  view.querySelectorAll("[data-job]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      const r = await post(`/jobs/${b.dataset.job}`);
+      toast(`${b.dataset.job}: ${JSON.stringify(r.result).slice(0, 140)}`);
+    } catch (err) { toast(err.message); }
+    render();
+  }));
+  view.querySelectorAll("[data-done]").forEach((b) => b.addEventListener("click", async () => {
+    await post(`/inbox/${b.dataset.done}/done`);
+    toast("Marked done");
+    render();
   }));
   $("#send-digest", view).addEventListener("click", async () => {
     const r = await post("/digest");

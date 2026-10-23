@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import Settings
-from ..models import ACTIVE_ORDER_STATUSES, Order, OrderLine
+from ..models import ACTIVE_ORDER_STATUSES, Alert, Order, OrderLine
 from ..timeutil import end_of_day_utc, iso, local_date, utcnow
 from . import ai, signals
 
@@ -70,9 +70,16 @@ def refresh_signals(session: Session, settings: Settings, now: datetime | None =
         candidates: list[tuple[datetime, str, str]] = []
         if order.system_deadline:
             candidates.append((order.system_deadline, "system", f"date set in {order.source}"))
+        if order.manual_deadline:
+            candidates.append((order.manual_deadline, order.manual_deadline_source or "manual",
+                               f"set by {order.manual_deadline_source or 'hand'}"))
         if sig.deadline:
             candidates.append((end_of_day_utc(sig.deadline, settings.timezone), sig.deadline_source, sig.deadline_text))
         flags = list(sig.flags)
+        for n in order.external_notes or []:
+            flags += [f for f in signals.keyword_hits(n.get("note"), settings.note_keywords) if f not in flags]
+            if n.get("source") and f"note from {n['source']}" not in flags:
+                flags.append(f"note from {n['source']}")
         hazmat = any(l.product and l.product.hazmat for l in order.lines)
         order_type = sig.order_type
 
@@ -124,9 +131,41 @@ def to_dict(order: Order, now: datetime) -> dict:
         "note_flags": order.note_flags or [], "tags": order.tags or [], "attributes": order.attributes or {},
         "hazmat": order.is_hazmat, "ship_from": order.ship_from.code if order.ship_from else None,
         "ai": order.ai_signals,
+        "external_notes": order.external_notes or [],
         "warehouse": [{"source": w.source, "number": w.number, "status": w.status, "raw_status": w.raw_status,
                        "notes": w.notes, "ship_from": w.ship_from.code if w.ship_from else None}
                       for w in order.warehouse_records],
         "lines": [{"sku": l.sku, "title": l.title, "qty": l.qty, "fulfilled": l.qty_fulfilled,
                    "hazmat": bool(l.product and l.product.hazmat)} for l in order.lines],
     }
+
+
+def list_view(session: Session, now: datetime, view: str = "watch", q: str | None = None) -> list[dict]:
+    """Channel orders for one dashboard view: watch | active | priority | subscription | seasonal |
+    wholesale | hazmat | all. The watchlist is active orders with a deadline, notes, hazmat, a
+    non-standard type or an open alert, soonest deadline first."""
+    alerted = {a.subject_id for a in session.scalars(select(Alert).where(Alert.subject_type == "order",
+                                                                          Alert.status == "open"))}
+    rows = session.scalars(select(Order).where(Order.linked_order_id.is_(None)).options(
+        selectinload(Order.lines), selectinload(Order.warehouse_records), selectinload(Order.ship_from)))
+    out = []
+    for o in rows:
+        d = to_dict(o, now)
+        active = d["status"] in ACTIVE_ORDER_STATUSES
+        if view == "watch" and not (active and (o.required_by or o.note_flags or o.is_hazmat or o.id in alerted
+                                                or o.order_type != "standard")):
+            continue
+        if view == "active" and not active:
+            continue
+        if view in ("priority", "subscription", "seasonal", "wholesale") and (o.order_type != view or not active):
+            continue
+        if view == "hazmat" and not (o.is_hazmat and active):
+            continue
+        if q and q.lower() not in f"{o.number} {o.customer_name} {o.notes}".lower():
+            continue
+        d["has_alert"] = o.id in alerted
+        out.append(d)
+    far = "9999"
+    out.sort(key=lambda d: (d["required_by"] or far, d["placed_at"] or far) if view != "all"
+             else (d["placed_at"] or ""), reverse=view == "all")
+    return out[:500]

@@ -184,6 +184,12 @@ class Order(Base):
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime)
     # A deadline the source system stores itself (e.g. Extensiv ship-cancel date).
     system_deadline: Mapped[datetime | None] = mapped_column(DateTime)
+    # A deadline set from outside the order systems (Muse handoff, dashboard).
+    manual_deadline: Mapped[datetime | None] = mapped_column(DateTime)
+    manual_deadline_source: Mapped[str | None] = mapped_column(String(40))
+    # Notes added outside the order systems: [{"source": "muse", "note": ..., "at": iso}]
+    external_notes: Mapped[list | None] = mapped_column(JSON)
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Earliest deadline found anywhere (system, attributes, tags, notes, AI, linked warehouse records).
     required_by: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     required_by_source: Mapped[str | None] = mapped_column(String(40))  # system|attribute|tag|note|ai|linked
@@ -420,6 +426,69 @@ class ProcessedDocument(Base):
     kind: Mapped[str] = mapped_column(String(40))  # tracking_update | invoice | ignored | failed
     summary: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class KeyValue(Base):
+    """Small persistent state: rotated OAuth tokens, poll offsets, last run of daily jobs."""
+
+    __tablename__ = "key_values"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class InboxItem(Base):
+    """Something another system or AI handed us to act on (Muse alerts, tasks, notes, files)."""
+
+    __tablename__ = "inbox_items"
+    __table_args__ = (UniqueConstraint("source", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(40))
+    external_id: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20))  # alert | task | note | file
+    severity: Mapped[str] = mapped_column(String(10), default="info")
+    title: Mapped[str] = mapped_column(String(300))
+    detail: Mapped[str | None] = mapped_column(Text)
+    due: Mapped[date | None] = mapped_column(Date)
+    subject_type: Mapped[str | None] = mapped_column(String(40))
+    subject_id: Mapped[int | None] = mapped_column(Integer)
+    file_name: Mapped[str | None] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(12), default="open")  # open | done | superseded
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Forecast(Base):
+    """Expected units per day for a SKU (optionally at one location), e.g. from Muse."""
+
+    __tablename__ = "forecasts"
+    __table_args__ = (UniqueConstraint("source", "product_id", "location_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(40))
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"))
+    units_per_day: Mapped[Decimal] = mapped_column(Dec)
+    as_of: Mapped[date] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    product: Mapped[Product] = relationship()
+    location: Mapped[Location | None] = relationship()
+
+
+class HandoffFile(Base):
+    """Files exchanged with other tools through shared folders (Muse)."""
+
+    __tablename__ = "handoff_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    partner: Mapped[str] = mapped_column(String(40))
+    direction: Mapped[str] = mapped_column(String(10))  # out | in
+    name: Mapped[str] = mapped_column(String(300))
+    location: Mapped[str | None] = mapped_column(String(400))  # Drive file id or local path
+    summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class SyncRun(Base):

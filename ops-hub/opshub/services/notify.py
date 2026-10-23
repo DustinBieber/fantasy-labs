@@ -25,7 +25,7 @@ def deliver(session: Session, settings: Settings, channel: str, text: str, alert
     notifier = notifiers(env).get(channel)
     if notifier is None:
         return None
-    if notifier.is_configured():
+    if notifier.send_ready():
         try:
             notifier.send(text)
             status, error = "sent", None

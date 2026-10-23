@@ -6,7 +6,7 @@ from opshub.config import Settings, set_settings
 
 @pytest.fixture
 def settings():
-    s = Settings(database_url="sqlite://", demo_mode=True)
+    s = Settings(database_url="sqlite://", demo_mode=True, scheduler=False)
     set_settings(s)
     yield s
     set_settings(None)

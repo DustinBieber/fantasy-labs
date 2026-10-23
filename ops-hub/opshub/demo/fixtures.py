@@ -277,6 +277,7 @@ def _ext_order(oid: int, ref: str, status: int, allocated: bool, created: dateti
     return {
         "readOnly": {"orderId": oid, "status": status, "fullyAllocated": allocated, "isClosed": status != 0,
                      "creationDate": _z(created), "lastModifiedDate": _z(modified or created),
+                     "processDate": _z(modified or created) if status == 1 else None,
                      "facilityIdentifier": {"id": int(EXTENSIV_FACILITY), "name": "Riverside"}},
         "referenceNum": ref,
         "poNum": po,
@@ -318,9 +319,10 @@ def extensiv_lots(now: datetime) -> list[dict]:
             "lotNumber": lot,
             "receivedDate": _z(now - timedelta(days=recv)),
             "expirationDate": _z(now + timedelta(days=best_by)) if best_by is not None else None,
-            "onHand": qty,
-            "available": qty - allocated,
-            "facilityId": int(EXTENSIV_FACILITY),
+            "onHandQty": qty,
+            "availableQty": qty - allocated,
+            "facilityIdentifier": {"id": int(EXTENSIV_FACILITY), "name": "Riverside"},
+            "palletIdentifier": {"id": 4000 + i, "nameKey": {"name": f"PLT-{4000 + i}"}},
             "locationIdentifier": {"nameKey": {"name": f"A-{i + 1:02d}-01"}},
         })
     return out

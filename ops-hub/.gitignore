@@ -6,3 +6,6 @@ __pycache__/
 .env
 .pytest_cache/
 *.egg-info/
+handoff/
+*.db-wal
+*.db-shm

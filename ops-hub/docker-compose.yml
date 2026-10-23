@@ -1,0 +1,14 @@
+services:
+  opshub:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:////data/opshub.db
+      MUSE_LOCAL_DIR: /data/handoff
+    ports:
+      - "8000:8000"
+    volumes:
+      - opshub-data:/data
+volumes:
+  opshub-data:

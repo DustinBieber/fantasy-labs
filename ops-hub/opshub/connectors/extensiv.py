@@ -1,11 +1,25 @@
 """Extensiv 3PL Warehouse Manager: the partner warehouse's orders, stock, lots and billable activity.
 
-We are a customer of the 3PL, so access is the 3PL's API with our customer id.
-The 3PL has to issue the client id/secret and a user login id for us.
+We are a customer of the 3PL, so access goes through the 3PL's API account: the warehouse
+issues a client id/secret and a user login id for us, plus our customer id and facility id(s).
+
+The API returns PascalCase JSON (``ReadOnly``, ``ResourceList``, ``OnHandQty``); responses are
+camel-cased on arrival so one mapping handles them. Stock and lots come from
+/inventory/stockdetails, orders from /orders.
+
+Billable activity has no customer-side endpoint, so it is derived from what the WMS shows:
+one row per shipped order and its extra units, receipt pallets per receiver, and the
+count of pallets in storage for the month. EXTENSIV_ACTIVITY_CODES maps these to your
+rate card's charge codes.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import base64
+import json
+import time
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from ..demo import fixtures
 from ..timeutil import parse_date, parse_iso, utcnow
@@ -13,6 +27,22 @@ from ._util import to_dec, to_int
 from .base import Connector, NActivity, NLot, NOrder, NOrderLine, NShipment, NStock, SyncBatch, register
 
 ITEMS_REL = "http://api.3plCentral.com/rels/orders/item"
+DEFAULT_CODES = {"order": "PICK-ORD", "extra_unit": "PICK-UNIT", "receipt_pallet": "RCV-PLT",
+                 "storage_pallet": "STOR-PLT", "hazmat_order": "HAZ-HNDL"}
+
+
+def camel_keys(obj):
+    """Lower-case the first letter of every key, recursively: ReadOnly -> readOnly, OrderId -> orderId."""
+    if isinstance(obj, list):
+        return [camel_keys(v) for v in obj]
+    if isinstance(obj, dict):
+        return {(k[:1].lower() + k[1:] if k and k[0].isupper() else k): camel_keys(v) for k, v in obj.items()}
+    return obj
+
+
+def _month_end(d: date) -> date:
+    nxt = date(d.year + (d.month == 12), d.month % 12 + 1, 1)
+    return nxt - timedelta(days=1)
 
 
 @register
@@ -21,15 +51,119 @@ class ExtensivConnector(Connector):
     name = "Extensiv 3PL Warehouse Manager"
     category = "warehouse"
     capabilities = ("orders", "inventory", "lots", "shipments", "billing")
-    settings_keys = ("EXTENSIV_CLIENT_ID", "EXTENSIV_CLIENT_SECRET", "EXTENSIV_USER_LOGIN_ID", "EXTENSIV_CUSTOMER_ID")
+    settings_keys = ("EXTENSIV_CLIENT_ID", "EXTENSIV_CLIENT_SECRET", "EXTENSIV_USER_LOGIN_ID", "EXTENSIV_CUSTOMER_ID",
+                     "EXTENSIV_FACILITY_ID")
     docs_url = "https://developer.extensiv.com/"
-    status_note = ("Mapping built for /orders, /inventory/stocksummaries and /inventory (lots). Live calls need "
-                   "API credentials from the 3PL. Billable activity has no customer endpoint: built from "
-                   "receivers, closed orders and month-end stock.")
+    status_note = ("Live client built (orders, stock details with lots/best-by, derived billable activity). "
+                   "Needs API credentials issued by the 3PL; verify on first run.")
 
     @property
     def vendor(self) -> str:
         return self.setting("EXTENSIV_VENDOR_NAME", fixtures.VENDOR_3PL)
+
+    @property
+    def codes(self) -> dict[str, str]:
+        return {**DEFAULT_CODES, **json.loads(self.setting("EXTENSIV_ACTIVITY_CODES") or "{}")}
+
+    # --- live -----------------------------------------------------------------------
+
+    def _token(self, client) -> str:
+        cached = getattr(self, "_tok", None)
+        if cached and cached[1] > time.time() + 60:
+            return cached[0]
+        basic = base64.b64encode(f"{self.setting('EXTENSIV_CLIENT_ID')}:{self.setting('EXTENSIV_CLIENT_SECRET')}"
+                                 .encode()).decode()
+        body = {"grant_type": "client_credentials", "user_login_id": self.setting("EXTENSIV_USER_LOGIN_ID")}
+        if self.setting("EXTENSIV_TPL_KEY"):
+            body["tpl"] = "{" + self.setting("EXTENSIV_TPL_KEY").strip("{}") + "}"
+        resp = client.post(f"{self.base}/AuthServer/api/Token", json=body,
+                           headers={"Authorization": f"Basic {basic}", "Content-Type": "application/json"})
+        resp.raise_for_status()
+        data = resp.json()
+        self._tok = (data["access_token"], time.time() + int(data.get("expires_in", 1800)))
+        return self._tok[0]
+
+    @property
+    def base(self) -> str:
+        return self.setting("EXTENSIV_BASE_URL", "https://secure-wms.com").rstrip("/")
+
+    def _pages(self, client, path: str, params: dict, list_key: str = "resourceList", page_size: int = 200) -> list[dict]:
+        out, page = [], 1
+        while True:
+            for attempt in range(4):
+                resp = client.get(f"{self.base}/{path}", params={**params, "pgsiz": page_size, "pgnum": page},
+                                  headers={"Authorization": f"Bearer {self._token(client)}",
+                                           "Accept": "application/hal+json"})
+                if resp.status_code in (429, 503) and attempt < 3:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                break
+            resp.raise_for_status()
+            body = camel_keys(resp.json())
+            rows = body.get(list_key) or (body.get("_embedded") or {}).get("item") or []
+            out += rows
+            total = body.get("totalResults")
+            if len(rows) < page_size or (total is not None and len(out) >= int(total)):
+                return out
+            page += 1
+
+    def pull_live(self, since: datetime | None) -> SyncBatch:
+        since = since or utcnow() - timedelta(days=int(self.setting("EXTENSIV_BACKFILL_DAYS", "60")))
+        customer = str(self.setting("EXTENSIV_CUSTOMER_ID"))
+        facilities = [f.strip() for f in self.setting("EXTENSIV_FACILITY_ID", "").split(",") if f.strip()]
+        with self.http() as client:
+            orders = self._pages(client, "orders", {
+                "detail": "All", "itemdetail": "All", "sort": "ReadOnly.lastModifiedDate",
+                "rql": f"ReadOnly.lastModifiedDate=ge={since.replace(microsecond=0).isoformat()}"})
+            lots = []
+            for fac in facilities:
+                for row in self._pages(client, "inventory/stockdetails", {
+                        "customerid": customer, "facilityid": fac, "sort": "receivedDate"}, page_size=500):
+                    row.setdefault("facilityIdentifier", {"id": fac})
+                    lots.append(row)
+        # A warehouse-level login can see other customers' orders; keep ours.
+        orders = [o for o in orders if str(((o.get("readOnly") or {}).get("customerIdentifier") or {}).get("id")
+                                           or customer) == customer]
+        batch = self.normalize(orders=orders, summaries=None, lots=lots, activity=[])
+        batch.activities = self.derive_activity(orders, lots, utcnow().date())
+        return batch
+
+    def derive_activity(self, orders: list[dict], lots: list[dict], today: date) -> list[NActivity]:
+        codes, out = self.codes, []
+        for o in orders:
+            ro = o.get("readOnly") or {}
+            shipped = parse_date(ro.get("processDate"))
+            if ro.get("status") != 1 or not shipped:
+                continue
+            ref = f"order {ro.get('orderId')}"
+            units = sum(to_int(i.get("qty")) for i in self._items(o))
+            if codes.get("order"):
+                out.append(NActivity(self.vendor, codes["order"], shipped, Decimal(1), ref))
+            if codes.get("extra_unit") and units > 1:
+                out.append(NActivity(self.vendor, codes["extra_unit"], shipped, Decimal(units - 1), ref))
+        receipts: dict[str, tuple[date, set]] = {}
+        pallets_now: set = set()
+        for lot in lots:
+            pallet = (lot.get("palletIdentifier") or {}).get("id")
+            receiver = lot.get("receiverId")
+            received = parse_date(lot.get("receivedDate"))
+            if receiver and received:
+                d, pals = receipts.setdefault(str(receiver), (received, set()))
+                if pallet:
+                    pals.add(pallet)
+            if pallet and to_int(lot.get("onHandQty", lot.get("onHand"))) > 0:
+                pallets_now.add(pallet)
+        if codes.get("receipt_pallet"):
+            for receiver, (d, pals) in receipts.items():
+                if pals:
+                    out.append(NActivity(self.vendor, codes["receipt_pallet"], d, Decimal(len(pals)), f"receiver {receiver}"))
+        if codes.get("storage_pallet") and pallets_now:
+            # Updated on every sync, so after the month closes it holds the month-end count.
+            out.append(NActivity(self.vendor, codes["storage_pallet"], _month_end(today), Decimal(len(pallets_now)),
+                                 f"month-end pallets {today:%Y-%m}"))
+        return out
+
+    # --- demo & mapping ---------------------------------------------------------------
 
     def pull_demo(self) -> SyncBatch:
         now = utcnow()
@@ -40,18 +174,25 @@ class ExtensivConnector(Connector):
             activity=fixtures.extensiv_billing_activity(now),
         )
 
-    def normalize(self, orders: list[dict], summaries: list[dict], lots: list[dict],
+    @staticmethod
+    def _items(o: dict) -> list[dict]:
+        emb = o.get("_embedded") or {}
+        return o.get("orderItems") or emb.get(ITEMS_REL) or emb.get("item") or []
+
+    def normalize(self, orders: list[dict], summaries: list[dict] | None, lots: list[dict],
                   activity: list[dict]) -> SyncBatch:
+        orders, lots = camel_keys(orders), camel_keys(lots)
         batch = SyncBatch()
         for o in orders:
             ro = o.get("readOnly") or {}
             facility = str((ro.get("facilityIdentifier") or {}).get("id") or "")
-            items = (o.get("_embedded") or {}).get(ITEMS_REL) or o.get("orderItems") or []
             raw = {0: "Open", 1: "Complete", 2: "Cancelled"}.get(ro.get("status"), str(ro.get("status")))
             if ro.get("status") == 2:
                 status = "cancelled"
             elif ro.get("status") == 1:
                 status = "shipped"
+            elif ro.get("pickDoneDate"):
+                status = "processing"
             else:
                 status = "allocated" if ro.get("fullyAllocated") else "open"
             notes = "\n".join(n for n in (o.get("notes"), o.get("shippingNotes")) if n) or None
@@ -62,44 +203,49 @@ class ExtensivConnector(Connector):
                 channel="warehouse", customer_name=ship_to.get("companyName") or ship_to.get("name"),
                 placed_at=parse_iso(ro.get("creationDate")), updated_at=parse_iso(ro.get("lastModifiedDate")),
                 notes=notes, required_by=parse_iso(o.get("shipCancelDate")),
-                order_type="wholesale" if o.get("poNum") else None,
+                order_type="wholesale" if o.get("poNum") else None, shipped_at=parse_iso(ro.get("processDate")),
                 lines=[NOrderLine(sku=(i.get("itemIdentifier") or {}).get("sku"), qty=to_int(i.get("qty")))
-                       for i in items],
+                       for i in self._items(o)],
                 ship_from=facility or None,
             ))
             routing = o.get("routingInfo") or {}
-            if routing.get("trackingNumber"):
+            tracking = routing.get("trackingNumber") or routing.get("billOfLading")
+            if tracking:
                 batch.shipments.append(NShipment(
-                    reference=f"EXT-{ro.get('orderId')}", direction="outbound", mode="parcel",
-                    carrier_name=routing.get("carrier") or "Unknown carrier", tracking_ref=routing["trackingNumber"],
+                    reference=f"EXT-{ro.get('orderId')}", direction="outbound",
+                    mode="ltl" if routing.get("billOfLading") and not routing.get("trackingNumber") else "parcel",
+                    carrier_name=routing.get("carrier") or "Unknown carrier", tracking_ref=tracking,
                     status="in_transit", origin=self.vendor, destination=ship_to.get("companyName"),
-                    order_number=ref, booked_at=parse_iso(ro.get("lastModifiedDate")),
+                    order_number=ref, booked_at=parse_iso(ro.get("processDate") or ro.get("lastModifiedDate")),
                 ))
-        for s in summaries:
-            sku = (s.get("itemIdentifier") or {}).get("sku")
-            if sku:
-                batch.stock.append(NStock(sku=sku, location=str(s.get("facilityId")), on_hand=to_int(s.get("onHand")),
-                                          allocated=to_int(s.get("allocated")), available=to_int(s.get("available"))))
+        totals: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
         for lot in lots:
             sku = (lot.get("itemIdentifier") or {}).get("sku")
-            if not sku or not to_int(lot.get("onHand")):
+            fac = str((lot.get("facilityIdentifier") or {}).get("id") or lot.get("facilityId") or "")
+            on_hand = to_int(lot.get("onHandQty", lot.get("onHand")))
+            available = to_int(lot.get("availableQty", lot.get("available", on_hand)))
+            if not sku or not on_hand:
                 continue
+            t = totals[(sku, fac)]
+            t[0] += on_hand
+            t[1] += available
             batch.lots.append(NLot(
-                sku=sku, location=str(lot.get("facilityId")),
-                lot_number=lot.get("lotNumber") or f"RI-{lot.get('receiveItemId')}",
-                qty_on_hand=to_int(lot.get("onHand")),
-                best_by=parse_date(lot.get("expirationDate")), received_on=parse_date(lot.get("receivedDate")),
+                sku=sku, location=fac, lot_number=lot.get("lotNumber") or f"RI-{lot.get('receiveItemId')}",
+                qty_on_hand=on_hand, best_by=parse_date(lot.get("expirationDate")),
+                received_on=parse_date(lot.get("receivedDate")),
             ))
+        if summaries is not None:
+            for s in camel_keys(summaries):
+                sku = (s.get("itemIdentifier") or {}).get("sku")
+                if sku:
+                    batch.stock.append(NStock(sku=sku, location=str(s.get("facilityId")), on_hand=to_int(s.get("onHand")),
+                                              allocated=to_int(s.get("allocated")), available=to_int(s.get("available"))))
+        else:  # live: stock is the sum of receive items
+            for (sku, fac), (on_hand, available) in totals.items():
+                batch.stock.append(NStock(sku=sku, location=fac, on_hand=on_hand, allocated=on_hand - available,
+                                          available=available))
         for a in activity:
             batch.activities.append(NActivity(vendor=self.vendor, charge_code=a["chargeCode"],
                                               activity_date=parse_date(a["date"]), qty=to_dec(a["qty"]),
                                               reference=a.get("reference") or ""))
         return batch
-
-    def pull_live(self, since: datetime | None) -> SyncBatch:
-        # Token: POST https://secure-wms.com/AuthServer/api/Token (Basic client_id:secret,
-        #   {"grant_type": "client_credentials", "user_login_id": ...})
-        # Orders: GET https://secure-wms.com/orders?detail=OrderItems&rql=readOnly.customerIdentifier.id==<id>
-        # Stock:  GET https://secure-wms.com/inventory/stocksummaries?rql=...
-        # Lots:   GET https://secure-wms.com/inventory?rql=...  (lotNumber, expirationDate per receive item)
-        return super().pull_live(since)
