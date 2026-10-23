@@ -12,7 +12,6 @@ Modes:
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -280,7 +279,11 @@ class Connector:
     transport: ClassVar[httpx.BaseTransport | None] = None
 
     def __init__(self, env: dict[str, str] | None = None):
-        self.env = os.environ if env is None else env
+        if env is None:
+            from ..settings_store import effective_env
+
+            env = effective_env()
+        self.env = env
 
     def http(self) -> httpx.Client:
         return httpx.Client(timeout=30, transport=type(self).transport)
@@ -294,11 +297,18 @@ class Connector:
     def is_configured(self) -> bool:
         return bool(self.settings_keys) and not self.missing_settings()
 
+    def files_ready(self) -> bool:
+        """Set up to import export files (see connectors.files) while the API isn't connected."""
+        return False
+
     def mode(self, demo_mode: bool) -> str:
+        """live (API) | files (export-file imports) | demo (sample data) | disabled | planned"""
         if self.planned:
             return "planned"
         if self.is_configured():
             return "live"
+        if self.files_ready():
+            return "files"
         return "demo" if demo_mode else "disabled"
 
     @property
@@ -310,6 +320,8 @@ class Connector:
         mode = self.mode(demo_mode)
         if mode == "live":
             return self.pull_live(since)
+        if mode == "files":
+            return self.pull_files(since)
         if mode == "demo":
             return self.pull_demo()
         raise RuntimeError(f"{self.name} is not configured; set {', '.join(self.settings_keys)}")
@@ -319,6 +331,17 @@ class Connector:
 
     def pull_demo(self) -> SyncBatch:
         return SyncBatch()
+
+    def pull_files(self, since: datetime | None) -> SyncBatch:
+        return SyncBatch()
+
+    def test(self) -> str:
+        """Make a small real call and say what it found; raise on failure."""
+        raise NotImplementedError("No connection test for this connector")
+
+    @property
+    def imports(self) -> bool:
+        return False
 
     def describe(self, demo_mode: bool) -> dict:
         return {
@@ -330,6 +353,8 @@ class Connector:
             "missing_settings": self.missing_settings(),
             "mode": self.mode(demo_mode),
             "pulls": self.pulls,
+            "imports": self.imports,
+            "testable": type(self).test is not Connector.test,
             "docs_url": self.docs_url,
             "status_note": self.status_note,
         }
@@ -356,6 +381,10 @@ class AIProvider(Connector):
 
     def complete(self, system: str, prompt: str) -> str:
         raise NotImplementedError
+
+    def test(self) -> str:
+        reply = self.complete("Reply with JSON only.", 'Return {"ok": true}.')
+        return f"Model replied: {reply.strip()[:60]}"
 
 
 REGISTRY: dict[str, type[Connector]] = {}

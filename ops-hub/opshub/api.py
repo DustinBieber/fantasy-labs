@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from . import db
+from . import db, settings_store
 from .config import Settings, get_settings
 from .connectors import all_connectors, get_connector
 from .connectors.base import NotWiredYet, NTrackingUpdate
@@ -51,6 +51,10 @@ class ShipmentUpdateIn(BaseModel):
 
 class InvoiceStatusIn(BaseModel):
     status: str
+
+
+class SetupSaveIn(BaseModel):
+    values: dict[str, str]
 
 
 class ShipmentIn(BaseModel):
@@ -105,6 +109,7 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     app.include_router(router_api())
+    app.include_router(router_setup())
     app.include_router(router_webhooks())
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
@@ -277,22 +282,31 @@ def router_api():
 
     # imports, inbox, handoffs, jobs
 
-    @r.post("/import/rq")
-    async def import_rq(request: Request, filename: str, session: Session = Depends(db.get_db),
-                        s: Settings = Depends(settings_dep)):
-        """Upload an RQ report export (CSV/XLSX) as the raw request body."""
+    @r.post("/import/{source}")
+    async def import_file(source: str, request: Request, filename: str, session: Session = Depends(db.get_db),
+                          s: Settings = Depends(settings_dep)):
+        """Upload an export file (CSV/XLSX) as the raw request body: Shopify, Lightspeed, Extensiv or RQ."""
         from .connectors import get_connector
         from .services import ingest
 
+        source = {"rq": "iqmetrix_rq"}.get(source, source)
+        try:
+            conn = get_connector(source)
+        except KeyError:
+            _404("source")
+        if not conn.imports:
+            _400(f"{source} doesn't take file imports")
         content = await request.body()
         if not content:
             _400("empty file")
-        conn = get_connector("iqmetrix_rq")
         batch, report = conn.import_files([(filename, content)], s.timezone)
-        if not (batch.stock or batch.sales):
+        if not (batch.stock or batch.sales or batch.orders or batch.lots):
             return {"imported": False, "files": report}
-        stats = ingest.apply_batch(session, batch, "iqmetrix_rq", s)
-        session.add(SyncRun(connector="iqmetrix_rq", mode="upload", status="ok", stats=stats, finished_at=utcnow()))
+        stats = ingest.apply_batch(session, batch, source, s)
+        stats["orders_linked"] = orders.link_orders(session)
+        session.flush()
+        orders.refresh_signals(session, s)
+        session.add(SyncRun(connector=source, mode="upload", status="ok", stats=stats, finished_at=utcnow()))
         session.commit()
         sync.run_rules(session, s)
         return {"imported": True, "files": report, "stats": stats}
@@ -350,7 +364,7 @@ def router_api():
     def google_status():
         from .connectors import google_auth
 
-        return {"method": google_auth.method(os.environ), "requirement": google_auth.AUTH_REQUIREMENT}
+        return {"method": google_auth.method(settings_store.effective_env()), "requirement": google_auth.AUTH_REQUIREMENT}
 
     # billing
 
@@ -483,6 +497,191 @@ def router_api():
     return r
 
 
+def router_setup():
+    import json as _json
+    import secrets as _secrets
+    import time as _time
+
+    import httpx
+    from fastapi import APIRouter
+    from fastapi.responses import RedirectResponse
+
+    from .connectors import google_auth
+    from .services import google_setup, kv
+    from .setup_spec import SECTIONS, mask
+
+    r = APIRouter()
+
+    def base_url(request: Request) -> str:
+        return (settings_store.effective_env().get("OPSHUB_PUBLIC_URL") or str(request.base_url)).rstrip("/")
+
+    def new_state(name: str) -> str:
+        state = _secrets.token_urlsafe(20)
+        kv.set(f"oauth_state:{name}", _json.dumps({"state": state, "at": _time.time()}))
+        return state
+
+    def check_state(name: str, state: str | None) -> bool:
+        saved = _json.loads(kv.get(f"oauth_state:{name}") or "{}")
+        return bool(state) and saved.get("state") == state and _time.time() - saved.get("at", 0) < 900
+
+    def done(msg: str) -> RedirectResponse:
+        from urllib.parse import quote
+
+        return RedirectResponse(f"/?setup={quote(msg)}#setup", status_code=303)
+
+    @r.get("/api/setup")
+    def setup_state(request: Request, s: Settings = Depends(settings_dep)):
+        from .connectors import get_connector
+
+        saved, env = settings_store.saved(), settings_store.effective_env()
+        base = base_url(request)
+        out = []
+        for sec in SECTIONS:
+            fields = []
+            for key, label, secret, help_text in sec["fields"]:
+                value = env.get(key, "")
+                fields.append({"key": key, "label": label, "secret": secret, "help": help_text,
+                               "value": (mask(value) if secret else value) if value else "",
+                               "set": bool(value), "source": "env" if settings_store.from_env(key) else
+                               ("saved" if key in saved else None)})
+            conns = []
+            for ck in sec["connectors"]:
+                c = get_connector(ck)
+                conns.append({"key": ck, "name": c.name, "mode": c.mode(s.demo_mode), "missing": c.missing_settings(),
+                              "pulls": c.pulls})
+            out.append({**{k: sec[k] for k in ("key", "title", "connectors")}, "intro": sec["intro"].replace("{base}", base),
+                        "actions": sec.get("actions", []), "fields": fields, "status": conns})
+        return {"base_url": base, "google": google_auth.method(env), "demo_mode": s.demo_mode,
+                "lightspeed_token": bool(kv.get("lightspeed_refresh_token")), "sections": out}
+
+    @r.post("/api/setup")
+    def setup_save(body: SetupSaveIn):
+        from .setup_spec import ALL_KEYS, SECRET_KEYS
+
+        values = {k: v for k, v in body.values.items() if k in ALL_KEYS}
+        # A masked secret coming back unchanged means "keep the current value".
+        values = {k: v for k, v in values.items() if not (k in SECRET_KEYS and v.startswith("••••"))}
+        skipped = settings_store.save(values)
+        google_auth.clear_cache()
+        return {"saved": sorted(k for k in values if k not in skipped), "kept_from_env": skipped}
+
+    @r.post("/api/setup/test/{key}")
+    def setup_test(key: str, s: Settings = Depends(settings_dep)):
+        from .connectors import get_connector
+
+        try:
+            c = get_connector(key)
+        except KeyError:
+            _404("connector")
+        try:
+            if c.is_configured():
+                return {"ok": True, "mode": "live", "message": c.test()}
+            if c.files_ready():
+                return {"ok": True, "mode": "files", "message": c.test_files()}
+            return {"ok": False, "mode": c.mode(s.demo_mode), "message": "Missing: " + ", ".join(c.missing_settings())}
+        except NotImplementedError as exc:
+            return {"ok": False, "message": str(exc)}
+        except httpx.HTTPStatusError as exc:
+            return {"ok": False, "message": f"{exc.response.status_code} from {exc.request.url.host}: "
+                                            f"{exc.response.text[:300]}"}
+        except Exception as exc:
+            return {"ok": False, "message": f"{type(exc).__name__}: {str(exc)[:300]}"}
+
+    @r.get("/setup/google/start")
+    def google_start(request: Request):
+        env = settings_store.effective_env()
+        if not (env.get("GOOGLE_OAUTH_CLIENT_ID") and env.get("GOOGLE_OAUTH_CLIENT_SECRET")):
+            return done("Save the Google OAuth client ID and secret first")
+        redirect = base_url(request) + "/setup/google/callback"
+        return RedirectResponse(google_auth.consent_url(env["GOOGLE_OAUTH_CLIENT_ID"], redirect, new_state("google")))
+
+    @r.get("/setup/google/callback")
+    def google_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
+        if error or not code:
+            return done(f"Google sign-in cancelled: {error or 'no code'}")
+        if not check_state("google", state):
+            return done("Google sign-in expired; try again")
+        env = settings_store.effective_env()
+        try:
+            tokens = google_auth.exchange_code(env["GOOGLE_OAUTH_CLIENT_ID"], env["GOOGLE_OAUTH_CLIENT_SECRET"], code,
+                                               base_url(request) + "/setup/google/callback")
+        except httpx.HTTPStatusError as exc:
+            return done(f"Google rejected the sign-in: {exc.response.text[:200]}")
+        if not tokens.get("refresh_token"):
+            return done("Google gave no refresh token: remove Ops Hub at myaccount.google.com/permissions and retry")
+        google_auth.store_refresh_token(tokens["refresh_token"])
+        return done("Google connected. Next: Set up Drive & Sheets")
+
+    @r.post("/api/setup/google/init")
+    def google_init(s: Settings = Depends(settings_dep)):
+        if not google_auth.method(settings_store.effective_env()):
+            _400("Sign in with Google first")
+        try:
+            return google_setup.initialize(s)
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(502, f"Google said {exc.response.status_code}: {exc.response.text[:300]}")
+
+    @r.get("/setup/lightspeed/start")
+    def lightspeed_start():
+        from urllib.parse import urlencode
+
+        env = settings_store.effective_env()
+        if not (env.get("LIGHTSPEED_CLIENT_ID") and env.get("LIGHTSPEED_CLIENT_SECRET")):
+            return done("Save the Lightspeed client ID and secret first")
+        authorize = env.get("LIGHTSPEED_AUTHORIZE_URL", "https://cloud.lightspeedapp.com/auth/oauth/authorize")
+        return RedirectResponse(authorize + "?" + urlencode({
+            "response_type": "code", "client_id": env["LIGHTSPEED_CLIENT_ID"], "state": new_state("lightspeed"),
+            "scope": env.get("LIGHTSPEED_SCOPE", "employee:all")}))
+
+    @r.get("/setup/lightspeed/callback")
+    def lightspeed_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+        from .connectors.lightspeed import KV_REFRESH, TOKEN_URL, _token_cache
+
+        if error or not code:
+            return done(f"Lightspeed authorization cancelled: {error or 'no code'}")
+        if not check_state("lightspeed", state):
+            return done("Lightspeed authorization expired; try again")
+        env = settings_store.effective_env()
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(env.get("LIGHTSPEED_TOKEN_URL", TOKEN_URL), data={
+                    "client_id": env["LIGHTSPEED_CLIENT_ID"], "client_secret": env["LIGHTSPEED_CLIENT_SECRET"],
+                    "code": code, "grant_type": "authorization_code"})
+                resp.raise_for_status()
+                tokens = resp.json()
+                acct = client.get("https://api.lightspeedapp.com/API/V3/Account.json",
+                                  headers={"Authorization": f"Bearer {tokens['access_token']}"}).json()
+        except httpx.HTTPStatusError as exc:
+            return done(f"Lightspeed rejected the authorization: {exc.response.text[:200]}")
+        kv.set(KV_REFRESH, tokens["refresh_token"])
+        _token_cache.clear()
+        account = acct.get("Account") or {}
+        account = account[0] if isinstance(account, list) else account
+        if account.get("accountID"):
+            settings_store.save({"LIGHTSPEED_ACCOUNT_ID": str(account["accountID"])})
+        return done(f"Lightspeed connected: {account.get('name', 'account')} {account.get('accountID', '')}")
+
+    @r.get("/api/setup/telegram/chats")
+    def telegram_chats():
+        from .connectors import get_connector
+
+        seen = _json.loads(kv.get("telegram_seen_chats") or "{}")
+        tg = get_connector("telegram")
+        if tg.setting("TELEGRAM_BOT_TOKEN"):
+            try:
+                with tg.http() as client:
+                    body = client.get(tg._url("getUpdates"), params={"timeout": 0}).json()
+                for up in body.get("result", []):
+                    chat = (up.get("message") or up.get("edited_message") or up.get("my_chat_member") or {}).get("chat") or {}
+                    if chat.get("id") is not None:
+                        seen[str(chat["id"])] = chat.get("title") or chat.get("username") or chat.get("first_name") or ""
+            except httpx.HTTPError:
+                pass
+        return [{"id": k, "name": v} for k, v in seen.items()]
+
+    return r
+
+
 def router_webhooks():
     import hashlib
     import hmac
@@ -495,7 +694,7 @@ def router_webhooks():
     def whatsapp_verify(request: Request):
         """Meta's one-time webhook verification handshake."""
         p = request.query_params
-        token = os.environ.get("WHATSAPP_VERIFY_TOKEN")
+        token = settings_store.effective_env().get("WHATSAPP_VERIFY_TOKEN")
         if token and p.get("hub.mode") == "subscribe" and secrets.compare_digest(p.get("hub.verify_token", ""), token):
             return p.get("hub.challenge", "")
         raise HTTPException(403, "verification failed")
@@ -504,7 +703,7 @@ def router_webhooks():
     async def whatsapp_inbound(request: Request, session: Session = Depends(db.get_db),
                                s: Settings = Depends(settings_dep)):
         raw = await request.body()
-        secret = os.environ.get("WHATSAPP_APP_SECRET")
+        secret = settings_store.effective_env().get("WHATSAPP_APP_SECRET")
         if secret:
             expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
             if not secrets.compare_digest(request.headers.get("x-hub-signature-256", ""), expected):

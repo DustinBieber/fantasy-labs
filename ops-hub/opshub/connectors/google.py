@@ -65,6 +65,18 @@ class GoogleConnector(Connector):
                                         request=resp.request, response=resp)
         return resp
 
+    def who(self, client: httpx.Client) -> str:
+        user = self.gapi(client, "GET", f"{DRIVE}/about", params={"fields": "user(emailAddress)"}).json()
+        return (user.get("user") or {}).get("emailAddress", "?")
+
+    def folder_name(self, client: httpx.Client, folder_id: str) -> str:
+        return self.gapi(client, "GET", f"{DRIVE}/files/{folder_id}",
+                         params={"fields": "name", "supportsAllDrives": "true"}).json().get("name", "?")
+
+    def test(self) -> str:
+        with self.http() as client:
+            return f"Signed in to Google as {self.who(client)}"
+
     # --- Drive helpers used by several connectors ---------------------------------
 
     def drive_list(self, client: httpx.Client, folder_id: str, since: datetime | None = None) -> list[dict]:
@@ -158,6 +170,21 @@ class GoogleSheetsConnector(GoogleConnector):
                              params=[("ranges", t) for t in tabs] + [("majorDimension", "ROWS")]).json()
         values = {t: vr.get("values", []) for t, vr in zip(tabs, body.get("valueRanges", []))}
         return self.normalize(values)
+
+    def test(self) -> str:
+        with self.http() as client:
+            parts = [f"Signed in as {self.who(client)}"]
+            for key, label in (("GOOGLE_SHEETS_MASTER_ID", "master sheet"), ("GOOGLE_SHEETS_REPORT_ID", "report sheet")):
+                if self.setting(key):
+                    meta = self.gapi(client, "GET", f"{SHEETS}/{self.setting(key)}",
+                                     params={"fields": "properties.title,sheets.properties.title"}).json()
+                    tabs = [s["properties"]["title"] for s in meta.get("sheets", [])]
+                    extra = ""
+                    if key == "GOOGLE_SHEETS_MASTER_ID":
+                        missing = [t for t in MASTER_TABS if t not in tabs]
+                        extra = f" (missing tabs: {', '.join(missing)})" if missing else " (all tabs present)"
+                    parts.append(f"{label} \"{meta['properties']['title']}\" opens{extra}")
+        return "; ".join(parts)
 
     def write_reports(self, tables: dict[str, list[list]]) -> int:
         """Replace each named tab of the report spreadsheet with the given rows."""
@@ -292,6 +319,14 @@ class GmailConnector(GoogleConnector, Notifier):
                 messages.append(self._read_message(client, mid))
         return self.normalize(messages)
 
+    def test(self) -> str:
+        with self.http() as client:
+            prof = self.gapi(client, "GET", f"{GMAIL}/profile").json()
+            found = self.gapi(client, "GET", f"{GMAIL}/messages", params={
+                "q": self.setting("GMAIL_QUERY", "newer_than:14d -in:chats -in:sent"), "maxResults": 100}).json()
+        return (f"Mailbox {prof.get('emailAddress')}: {len(found.get('messages', []))} recent emails match the search"
+                + ("" if self.setting("GMAIL_TO") else "; set GMAIL_TO to email the digest"))
+
     def _read_message(self, client: httpx.Client, mid: str) -> dict:
         m = self.gapi(client, "GET", f"{GMAIL}/messages/{mid}", params={"format": "full"}).json()
         payload = m.get("payload") or {}
@@ -357,6 +392,11 @@ class GoogleDriveConnector(GoogleConnector):
     def pull_live(self, since: datetime | None) -> SyncBatch:
         return SyncBatch(documents=self.drive_documents(self.setting("GOOGLE_DRIVE_FOLDER_ID"), since))
 
+    def test(self) -> str:
+        with self.http() as client:
+            return (f"Signed in as {self.who(client)}; documents folder "
+                    f"\"{self.folder_name(client, self.setting('GOOGLE_DRIVE_FOLDER_ID'))}\" is readable")
+
 
 @register
 class GoogleCalendarConnector(GoogleConnector):
@@ -367,6 +407,11 @@ class GoogleCalendarConnector(GoogleConnector):
     settings_keys = ("GOOGLE_CALENDAR_ID",)
     docs_url = "https://developers.google.com/calendar/api"
     status_note = "Live: publishes order deadlines, freight ETAs and standing-order dates as all-day events."
+
+    def test(self) -> str:
+        with self.http() as client:
+            cal = self.gapi(client, "GET", f"{CALENDAR}/calendars/{self.setting('GOOGLE_CALENDAR_ID')}").json()
+        return f"Calendar \"{cal.get('summary')}\" ({cal.get('timeZone')}) is writable"
 
     def push_events(self, events: list[dict], previous_ids: set[str] | None = None) -> dict:
         """Upsert events by id; delete ones we published before that are no longer current."""
@@ -409,3 +454,7 @@ class GoogleChatConnector(Notifier):
     def send(self, text: str) -> None:
         with self.http() as client:
             client.post(self.setting("GOOGLE_CHAT_WEBHOOK_URL"), json={"text": text}).raise_for_status()
+
+    def test(self) -> str:
+        self.send("\u2705 Ops Hub is connected to this space.")
+        return "Posted a test message to the space"

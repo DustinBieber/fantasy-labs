@@ -25,6 +25,7 @@ from ..demo import fixtures
 from ..timeutil import parse_date, parse_iso, utcnow
 from ._util import to_dec, to_int
 from .base import Connector, NActivity, NLot, NOrder, NOrderLine, NShipment, NStock, SyncBatch, register
+from .files import FileImports
 
 ITEMS_REL = "http://api.3plCentral.com/rels/orders/item"
 DEFAULT_CODES = {"order": "PICK-ORD", "extra_unit": "PICK-UNIT", "receipt_pallet": "RCV-PLT",
@@ -46,13 +47,15 @@ def _month_end(d: date) -> date:
 
 
 @register
-class ExtensivConnector(Connector):
+class ExtensivConnector(FileImports, Connector):
     key = "extensiv"
     name = "Extensiv 3PL Warehouse Manager"
     category = "warehouse"
     capabilities = ("orders", "inventory", "lots", "shipments", "billing")
     settings_keys = ("EXTENSIV_CLIENT_ID", "EXTENSIV_CLIENT_SECRET", "EXTENSIV_USER_LOGIN_ID", "EXTENSIV_CUSTOMER_ID",
                      "EXTENSIV_FACILITY_ID")
+    import_folder_key = "EXTENSIV_IMPORT_FOLDER_ID"
+    import_query_key = "EXTENSIV_IMPORT_GMAIL_QUERY"
     docs_url = "https://developer.extensiv.com/"
     status_note = ("Live client built (orders, stock details with lots/best-by, derived billable activity). "
                    "Needs API credentials issued by the 3PL; verify on first run.")
@@ -106,6 +109,14 @@ class ExtensivConnector(Connector):
             if len(rows) < page_size or (total is not None and len(out) >= int(total)):
                 return out
             page += 1
+
+    def test(self) -> str:
+        with self.http() as client:
+            resp = client.get(f"{self.base}/orders", params={"pgsiz": 1, "pgnum": 1},
+                              headers={"Authorization": f"Bearer {self._token(client)}", "Accept": "application/hal+json"})
+            resp.raise_for_status()
+            body = camel_keys(resp.json())
+        return f"Signed in to {self.base}; {body.get('totalResults', '?')} orders visible to this login"
 
     def pull_live(self, since: datetime | None) -> SyncBatch:
         since = since or utcnow() - timedelta(days=int(self.setting("EXTENSIV_BACKFILL_DAYS", "60")))

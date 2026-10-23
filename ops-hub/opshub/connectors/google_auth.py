@@ -18,7 +18,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",  # to create the Ops Hub calendar, then write its events
 ]
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -39,6 +39,13 @@ def _stored_refresh_token() -> str | None:
 
 def refresh_token(env) -> str | None:
     return env.get("GOOGLE_OAUTH_REFRESH_TOKEN") or _stored_refresh_token()
+
+
+def store_refresh_token(token: str) -> None:
+    from ..services import kv
+
+    kv.set(KV_REFRESH, token)
+    clear_cache()
 
 
 def method(env) -> str | None:

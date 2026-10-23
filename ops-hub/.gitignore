@@ -9,3 +9,4 @@ __pycache__/
 handoff/
 *.db-wal
 *.db-shm
+logs/

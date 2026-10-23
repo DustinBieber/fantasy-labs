@@ -34,6 +34,12 @@ class MuseConnector(GoogleConnector):
     def pull_live(self, since: datetime | None) -> SyncBatch:
         return SyncBatch(documents=self.drive_documents(self.setting("MUSE_DRIVE_INBOX_FOLDER_ID"), since, hint="muse"))
 
+    def test(self) -> str:
+        with self.http() as client:
+            out = self.folder_name(client, self.setting("MUSE_DRIVE_OUTBOX_FOLDER_ID"))
+            inn = self.folder_name(client, self.setting("MUSE_DRIVE_INBOX_FOLDER_ID"))
+        return f"Outbox \"{out}\" and inbox \"{inn}\" are reachable"
+
     def pull_demo(self) -> SyncBatch:
         now = utcnow()
         today = now.date()

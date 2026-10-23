@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
@@ -35,7 +35,9 @@ class Resolver:
         ref = str(ref)
         if ref not in self._locs:
             loc = (self.s.scalar(select(Location).where(Location.source == self.source, Location.external_id == ref))
-                   or self.s.scalar(select(Location).where(Location.code == ref)))
+                   or self.s.scalar(select(Location).where(Location.code == ref))
+                   # export files often name the store instead of using its id
+                   or self.s.scalar(select(Location).where(func.lower(Location.name) == ref.lower())))
             if loc is None:
                 loc = Location(code=f"{self.source}:{ref}"[:64], name=f"{self.source} {ref}", kind="unknown",
                                source=self.source, external_id=ref)
@@ -234,6 +236,15 @@ def _apply_sales(session, batch, source, r: Resolver, stats) -> None:
     if not batch.sales:
         return
     existing = {s.external_id: s for s in session.scalars(select(SaleLine).where(SaleLine.source == source))}
+    # Switching from export files to the API: API sales replace file sales from the same period.
+    api_times = [n.sold_at for n in batch.sales if not n.external_id.startswith("file:") and n.sold_at]
+    if api_times:
+        start = min(api_times)
+        for ext, s in list(existing.items()):
+            if ext.startswith("file:") and s.sold_at >= start:
+                session.delete(s)
+                del existing[ext]
+                stats["file_sales_replaced"] += 1
     for n in batch.sales:
         loc, p = r.location(n.location), r.product(n.sku)
         s = existing.get(n.external_id)
@@ -252,6 +263,15 @@ def _apply_orders(session, batch, source, r: Resolver, now, stats) -> None:
     existing = {o.external_id: o for o in session.scalars(select(Order).where(Order.source == source))}
     for n in batch.orders:
         o = existing.get(n.external_id)
+        if o is None and not n.external_id.startswith("file:") and f"file:{n.number}" in existing:
+            # The API now reports an order first imported from an export file: take it over.
+            o = existing.pop(f"file:{n.number}")
+            o.external_id = n.external_id
+            existing[n.external_id] = o
+            for s in session.scalars(select(SaleLine).where(SaleLine.source == source,
+                                                            SaleLine.external_id.like(f"file:{n.number}:%"))):
+                session.delete(s)
+            stats["orders_adopted_from_files"] += 1
         if o is None:
             o = Order(source=source, external_id=n.external_id, status=n.status,
                       status_changed_at=n.updated_at or n.placed_at or now)

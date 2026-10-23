@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from datetime import datetime, timedelta
 
@@ -25,7 +24,9 @@ log = logging.getLogger(__name__)
 
 def send_digest(session: Session, s: Settings, env=None) -> dict:
     text = notify.digest_text(session)
-    channels = [c.strip() for c in ((env or os.environ).get("DIGEST_CHANNELS") or "google_chat,telegram,gmail").split(",")]
+    from ..settings_store import effective_env
+
+    channels = [c.strip() for c in ((env or effective_env()).get("DIGEST_CHANNELS") or "google_chat,telegram,gmail").split(",")]
     sent = [f"{n.channel}:{n.status}" for c in channels if (n := notify.deliver(session, s, c, text, env=env))]
     return {"sent": sent}
 

@@ -225,16 +225,7 @@ async function renderInventory(view) {
     exp("stock");
     $("#inv-export", view).insertAdjacentHTML("afterbegin", `<label class="btn small" style="margin-right:6px">Import RQ report
       <input id="rq-file" type="file" accept=".csv,.tsv,.xlsx,.xlsm" hidden></label>`);
-    $("#rq-file", view).addEventListener("change", async (e) => {
-      const f = e.target.files[0];
-      if (!f) return;
-      const res = await fetch(`/api/import/rq?filename=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
-      const r = await res.json();
-      const info = (r.files || []).map((x) => `${x.file}: ${x.kind}${x.stock_rows ? `, ${x.stock_rows} stock rows` : ""}${x.sales_lines ? `, ${x.sales_lines} sales lines` : ""}`).join("; ");
-      const zeroed = r.stats && r.stats.stock_zeroed ? ` ${r.stats.stock_zeroed} SKUs missing from the report were set to 0 at those stores.` : "";
-      toast(r.imported ? `Imported. ${info}.${zeroed}` : `Nothing imported. ${info || r.detail || ""}`);
-      render();
-    });
+    $("#rq-file", view).addEventListener("change", (e) => importFile("iqmetrix_rq", e.target.files[0]));
     const m = await api("/inventory/stock");
     body.innerHTML = `<div class="card">${table(["SKU", "Item", ...m.locations.map((l) => ({ label: l.code, cls: "num" })),
       { label: "Total", cls: "num" }, { label: "Available", cls: "num" }], m.rows.map((r) => `<tr>
@@ -296,6 +287,18 @@ async function renderInventory(view) {
       </div>`;
     });
   }
+}
+
+async function importFile(source, f) {
+  if (!f) return;
+  const res = await fetch(`/api/import/${source}?filename=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
+  const r = await res.json();
+  const parts = (x) => [x.orders && `${x.orders} orders`, x.stock_rows && `${x.stock_rows} stock rows`, x.lots && `${x.lots} lots`,
+    x.sales_lines && `${x.sales_lines} sales lines`].filter(Boolean).join(", ");
+  const info = (r.files || []).map((x) => `${x.file}: ${x.kind}${parts(x) ? " (" + parts(x) + ")" : ""}`).join("; ");
+  const zeroed = r.stats && r.stats.stock_zeroed ? ` ${r.stats.stock_zeroed} SKUs missing from the report were set to 0 at those locations.` : "";
+  toast(r.imported ? `Imported ${info}.${zeroed}` : `Nothing imported: ${info || r.detail || "unrecognised file"}. Check the column headers.`);
+  render();
 }
 
 function stCell(r) {
@@ -492,6 +495,7 @@ const CATEGORY = { commerce: "Commerce", pos: "Point of sale", warehouse: "Wareh
 
 function modeLabel(c) {
   if (c.mode === "live") return ["live", "Live"];
+  if (c.mode === "files") return ["live", "Live: export files"];
   if (c.mode === "planned") return ["planned", "Planned"];
   if (c.mode === "disabled") return ["disabled", "Not set up"];
   if (c.key === "iqmetrix_rq") return ["demo", "Demo data · upload works"];
@@ -550,6 +554,7 @@ async function renderConnectors(view) {
       toast(`${b.dataset.sync}: ${r.status}${r.error ? " - " + r.error.split("\n")[0] : ""}`);
     } finally { render(); }
   }));
+  view.querySelectorAll("[data-import]").forEach((inp) => inp.addEventListener("change", (e) => importFile(inp.dataset.import, e.target.files[0])));
   view.querySelectorAll("[data-job]").forEach((b) => b.addEventListener("click", async () => {
     b.disabled = true;
     try {
@@ -584,14 +589,107 @@ function connCard(c) {
       <span class="muted">${fmtDateTime(run.finished_at)}</span>${stats ? `<div class="muted">${esc(stats)}</div>` : ""}
       ${run.error && run.status !== "ok" ? `<div class="muted">${esc(run.error.split("\n")[0])}</div>` : ""}</div>` : ""}
     <div class="row">${c.pulls && c.mode !== "planned" ? `<button class="btn small" data-sync="${esc(c.key)}">Sync now</button>` : ""}
+      ${c.imports ? `<label class="btn small">Import file<input type="file" data-import="${esc(c.key)}" accept=".csv,.tsv,.xlsx,.xlsm" hidden></label>` : ""}
       ${c.docs_url ? `<a class="small" href="${esc(c.docs_url)}" target="_blank" rel="noopener">API docs</a>` : ""}</div>
   </div>`;
 }
 
 // ---- shell -------------------------------------------------------------------------------------------------
 
+// ---- setup ---------------------------------------------------------------------------------------------------
+
+const MODE_CHIP = { live: ["ok", "Live"], files: ["ok", "Live: files"], demo: ["warn", "Sample data"],
+  disabled: ["", "Off"], planned: ["", "Planned"] };
+
+async function renderSetup(view) {
+  const st = await api("/setup");
+  const all = st.sections.flatMap((s) => s.status);
+  const connected = all.filter((c) => c.mode === "live" || c.mode === "files").length;
+  view.innerHTML = `
+    <div class="card pad"><div class="row"><h2 style="margin:0">Connect your systems</h2><div class="grow"></div>
+      <b>${connected} of ${all.length}</b><span class="muted">connected</span></div>
+      <p class="muted small" style="margin-bottom:0">Values saved here are stored in the Ops Hub database; anything set in
+        <code>.env</code> wins and shows as read-only. Systems not connected keep running on sample data. Systems without
+        API access yet can run on <b>export files</b>: drop them in that system's Drive folder or use Import file.
+        This page's address for OAuth redirects: <code>${esc(st.base_url)}</code>.</p></div>
+    ${st.sections.map(setupCard).join("")}`;
+  view.querySelectorAll("form[data-section]").forEach((f) => f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const values = Object.fromEntries([...new FormData(f)].filter(([, v]) => v !== ""));
+    f.querySelectorAll("input[data-clear]:checked").forEach((c) => { values[c.dataset.clear] = ""; });
+    const r = await post("/setup", { values });
+    toast(`Saved ${r.saved.length} setting(s)` + (r.kept_from_env.length ? `; .env still sets ${r.kept_from_env.join(", ")}` : ""));
+    render();
+  }));
+  view.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", async () => {
+    const out = $(`#test-${b.dataset.test}`, view);
+    b.disabled = true;
+    out.innerHTML = `<span class="muted">Testing...</span>`;
+    try {
+      const r = await post(`/setup/test/${b.dataset.test}`);
+      out.innerHTML = `<span class="${r.ok ? "t-ok" : "t-urgent"}">${r.ok ? "✓" : "✗"} ${esc(r.message)}</span>`;
+    } catch (err) { out.innerHTML = `<span class="t-urgent">${esc(err.message)}</span>`; }
+    b.disabled = false;
+  }));
+  view.querySelectorAll("[data-action-post]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    const out = $(`#action-${b.dataset.section}`, view);
+    out.innerHTML = `<span class="muted">Working... (this can take a minute)</span>`;
+    try {
+      const r = await post(b.dataset.actionPost.replace(/^\/api/, ""));
+      out.innerHTML = `<div class="t-ok">✓ Done in ${esc(r.account || "")}.</div>
+        <div class="small muted">${r.created && r.created.length ? "Created: " + esc(r.created.join(", ")) : "Everything already existed."}
+        ${r.saved && r.saved.length ? "<br>Saved: " + esc(r.saved.join(", ")) : ""} ${r.calendar ? "<br>Calendar: " + esc(r.calendar) : ""}</div>
+        ${r.folder_url ? `<a href="${esc(r.folder_url)}" target="_blank" rel="noopener">Open the Ops Hub folder</a>` : ""}`;
+      setTimeout(render, 2500);
+    } catch (err) { out.innerHTML = `<span class="t-urgent">${esc(err.message)}</span>`; }
+    b.disabled = false;
+  }));
+  view.querySelectorAll("[data-action-get]").forEach((b) => b.addEventListener("click", async () => {
+    const out = $(`#action-${b.dataset.section}`, view);
+    const chats = await api(b.dataset.actionGet.replace(/^\/api/, ""));
+    out.innerHTML = chats.length ? chats.map((c) => `<div class="row small"><code>${esc(c.id)}</code> ${esc(c.name)}
+      <button class="btn small" data-use-chat="${esc(c.id)}">Use for alerts</button></div>`).join("")
+      : `<span class="muted small">No chats yet. Add the bot to your group and send /start, then try again.</span>`;
+    out.querySelectorAll("[data-use-chat]").forEach((u) => u.addEventListener("click", async () => {
+      await post("/setup", { values: { TELEGRAM_CHAT_ID: u.dataset.useChat } });
+      toast("Alerts chat saved");
+      render();
+    }));
+  }));
+}
+
+function setupCard(sec) {
+  const chips = sec.status.map((c) => { const [cls, label] = c.mode === "demo" && !c.pulls ? ["", "Not connected"]
+      : MODE_CHIP[c.mode] || ["", c.mode];
+    return `<span class="chip ${cls}" title="${esc(c.missing.join(", "))}">${esc(c.name)}: ${esc(label)}</span>`; }).join("");
+  const fields = sec.fields.map((f) => `<label class="field">${esc(f.label)}
+      <input name="${esc(f.key)}" type="${f.secret ? "password" : "text"}" autocomplete="off"
+        ${f.source === "env" ? "disabled" : ""} value="${f.secret ? "" : esc(f.value)}"
+        placeholder="${esc(f.secret && f.set ? f.value + " (saved)" : f.help || "")}">
+      <span class="small muted">${f.source === "env" ? "set in .env" : f.secret && f.set ? "leave blank to keep" : f.value ? esc(f.help) : ""}</span>
+      ${f.source === "saved" ? `<span class="small"><input type="checkbox" data-clear="${esc(f.key)}"> clear</span>` : ""}
+    </label>`).join("");
+  const actions = (sec.actions || []).map((a) => a.href
+    ? `<a class="btn small primary" href="${esc(a.href)}">${esc(a.label)}</a>`
+    : a.post ? `<button type="button" class="btn small primary" data-section="${esc(sec.key)}" data-action-post="${esc(a.post)}">${esc(a.label)}</button>`
+    : `<button type="button" class="btn small" data-section="${esc(sec.key)}" data-action-get="${esc(a.get)}">${esc(a.label)}</button>`).join("");
+  const tests = sec.status.map((c) => `<button type="button" class="btn small" data-test="${esc(c.key)}">Test ${esc(c.name)}</button>
+    <div id="test-${esc(c.key)}" class="small" style="flex-basis:100%"></div>`).join("");
+  return `<div class="card pad" style="margin-top:12px">
+    <div class="row"><h3 style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-size:15px">${esc(sec.title)}</h3>
+      <div class="grow"></div>${chips}</div>
+    <p class="muted small">${esc(sec.intro)}</p>
+    <form data-section="${esc(sec.key)}" class="form-grid">${fields}
+      <div class="row" style="grid-column:1/-1"><button class="btn primary small">Save</button>${actions}</div>
+    </form>
+    <div id="action-${esc(sec.key)}" class="small" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:8px">${tests}</div>
+  </div>`;
+}
+
 const VIEWS = { overview: renderOverview, orders: renderOrders, inventory: renderInventory, freight: renderFreight,
-  billing: renderBilling, connectors: renderConnectors };
+  billing: renderBilling, connectors: renderConnectors, setup: renderSetup };
 
 async function refreshHeader() {
   const ov = await api("/overview");
@@ -635,6 +733,8 @@ $("#btn-rules").addEventListener("click", (e) => runAction(e.currentTarget, "/ru
 window.addEventListener("hashchange", () => { closeDrawer(); render(); });
 
 (async () => {
+  const msg = new URLSearchParams(location.search).get("setup");
+  if (msg) { toast(msg); history.replaceState(null, "", location.pathname + location.hash); }
   try { await refreshHeader(); } catch (_) { /* first load before tables exist */ }
   await render();
 })();

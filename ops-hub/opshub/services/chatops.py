@@ -155,10 +155,16 @@ def poll_telegram(session: Session, s: Settings, env: dict[str, str] | None = No
     offset = int(kv.get("telegram_offset", "0", session=session))
     updates = tg.get_updates(offset)
     replied = 0
+    import json
+
+    seen = json.loads(kv.get("telegram_seen_chats", "{}", session=session))  # shown on the Setup page
     for up in updates:
         offset = max(offset, int(up["update_id"]) + 1)
         msg = up.get("message") or up.get("edited_message") or {}
-        chat_id, text = (msg.get("chat") or {}).get("id"), msg.get("text") or msg.get("caption")
+        chat = msg.get("chat") or {}
+        chat_id, text = chat.get("id"), msg.get("text") or msg.get("caption")
+        if chat_id is not None:
+            seen[str(chat_id)] = chat.get("title") or chat.get("username") or chat.get("first_name") or ""
         if chat_id is None or not text:
             continue
         role = role_for("telegram", str(chat_id), tg.env)
@@ -169,6 +175,7 @@ def poll_telegram(session: Session, s: Settings, env: dict[str, str] | None = No
             tg.send(reply, chat_id=str(chat_id))
             replied += 1
     kv.set("telegram_offset", str(offset), session=session)
+    kv.set("telegram_seen_chats", json.dumps(seen), session=session)
     return {"updates": len(updates), "replied": replied}
 
 

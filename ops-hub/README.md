@@ -4,8 +4,11 @@ One place to watch orders, stock, freight and 3PL bills across Shopify, Extensiv
 iQmetrix RQ and Google Workspace. Alerts go to Google Chat, Telegram, WhatsApp and Gmail; there is
 a daily two-way handoff with Muse AI, and Claude, Gemini and ChatGPT read the messy text.
 
-Every connector runs on realistic sample data until its credentials are set, so the whole thing
-works on day one. **[docs/SETUP.md](docs/SETUP.md)** walks through connecting each system.
+Every connector runs on realistic sample data until it is connected. Systems without API access yet
+run on their own **export files** (Drive folder, report emails or upload) and switch to the API
+automatically once credentials arrive. Connect everything from the dashboard's **Setup** tab, which
+has paste-and-test forms and Google and Lightspeed sign-in buttons.
+**[CONNECT-TODAY.md](CONNECT-TODAY.md)** is the checklist; [docs/SETUP.md](docs/SETUP.md) has the detail.
 
 ## What it does
 
@@ -33,6 +36,8 @@ python -m opshub connectors   # what's live, what's still on sample data, what e
 python -m pytest              # tests
 ```
 
+No terminal needed: double-click `run/start-mac.command` (Mac) or `run/start-windows.bat` (Windows).
+For the Mac mini, `run/install-mac-service.sh` keeps it running in the background.
 Or with Docker: `docker compose up -d`. **Set `OPSHUB_PASSWORD`** before the app is reachable from
 anywhere but your own machine.
 

@@ -24,6 +24,14 @@ class TelegramConnector(Notifier):
                                                             "text": text[start:start + 4000],
                                                             "disable_web_page_preview": True}).raise_for_status()
 
+    def test(self) -> str:
+        with self.http() as client:
+            me = client.get(self._url("getMe"))
+            me.raise_for_status()
+        bot = me.json()["result"]
+        self.send("\u2705 Ops Hub is connected. Send \"help\" for commands.")
+        return f"Bot @{bot.get('username')} sent a test message to chat {self.setting('TELEGRAM_CHAT_ID')}"
+
     def get_updates(self, offset: int) -> list[dict]:
         with self.http() as client:
             resp = client.get(self._url("getUpdates"), params={"offset": offset, "timeout": 0,
@@ -42,6 +50,17 @@ class WhatsAppConnector(Notifier):
     status_note = ("Live: WhatsApp Cloud API alerts; replies to staff and carriers through the /webhooks/whatsapp "
                    "webhook. Messages the business starts need an approved template (WHATSAPP_TEMPLATE) unless "
                    "the recipient wrote in within 24 hours.")
+
+    def test(self) -> str:
+        version = self.setting("WHATSAPP_GRAPH_VERSION", "v23.0")
+        with self.http() as client:
+            resp = client.get(f"https://graph.facebook.com/{version}/{self.setting('WHATSAPP_PHONE_NUMBER_ID')}",
+                              params={"fields": "display_phone_number,verified_name,quality_rating"},
+                              headers={"Authorization": f"Bearer {self.setting('WHATSAPP_TOKEN')}"})
+            resp.raise_for_status()
+        d = resp.json()
+        tip = "" if self.setting("WHATSAPP_TEMPLATE") else "; set an approved template so alerts can start conversations"
+        return f"Number {d.get('display_phone_number')} ({d.get('verified_name')}) is ready{tip}"
 
     def send(self, text: str, to: str | None = None) -> None:
         version = self.setting("WHATSAPP_GRAPH_VERSION", "v23.0")

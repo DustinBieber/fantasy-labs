@@ -1,10 +1,19 @@
 # Connecting Ops Hub to your systems
 
-Work top to bottom. Each step makes one connector switch from **Demo data** to **Live** on the
-Connectors page. Everything not yet connected keeps running on sample data. Put settings in
-`ops-hub/.env` (copy `.env.example`) and restart.
+The quickest path is the **Setup** tab in the dashboard: paste credentials, click **Test**, and use
+the sign-in buttons. [CONNECT-TODAY.md](../CONNECT-TODAY.md) is the short version. This page has
+the detail.
 
-Check progress any time with `python -m opshub connectors`.
+Settings can also go in `ops-hub/.env`; a value there wins over the Setup page.
+
+Each connector runs in one of three modes:
+* **Live**: its API is connected.
+* **Live: export files**: no API yet, so it reads that system's own export files from its Drive
+  folder (`Ops Hub/Imports/...`), from report emails, or from **Import file**.
+* **Sample data**: nothing is connected yet.
+
+Moving from files to the API later adopts the imported orders and replaces file sales for the
+same period, so nothing is counted twice. Check progress any time with `python -m opshub connectors`.
 
 ## 0. Where it runs
 
@@ -26,16 +35,20 @@ One Google login covers all of these.
 1. Go to [console.cloud.google.com](https://console.cloud.google.com), create a project, and under
    **APIs & Services → Library** enable **Google Sheets API, Google Drive API, Gmail API, Google Calendar API**.
 2. **OAuth consent screen**:
-   * Google Workspace account: choose **Internal**.
+   * Google Workspace account (Jocor): choose **Internal**. No verification is needed and the
+     login doesn't expire.
    * Personal Gmail: choose **External**, add yourself as a test user, then **Publish app**.
      Approve the "unverified app" warning for your own account. Without publishing, Google expires
      the login every 7 days.
-3. **Credentials → Create credentials → OAuth client ID → Desktop app**. Put the ID and secret in
-   `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
-4. On a computer with a browser, run `python -m opshub google-login` and approve.
-   The refresh token is saved in the database. If Ops Hub runs on a server, either run the login
-   there and paste back the address the browser lands on, or log in locally and copy the token
-   into `GOOGLE_OAUTH_REFRESH_TOKEN`.
+3. **Credentials → Create credentials → OAuth client ID → Web application**, with authorized
+   redirect URI `http://localhost:8000/setup/google/callback`. Add the Mac mini's or public address
+   later if the dashboard moves.
+4. On the Setup page, paste the ID and secret, then **Save** → **Sign in with Google** →
+   **Set up Drive & Sheets**. That last step creates every folder, sheet and the calendar below,
+   and fills in their IDs.
+
+   No browser on the server? Use a *Desktop app* client with `python -m opshub google-login`.
+   Workspace alternative: a service account key file in `GOOGLE_SERVICE_ACCOUNT_JSON`.
 
    Workspace alternative: a service account key file in `GOOGLE_SERVICE_ACCOUNT_JSON`. Add
    `GOOGLE_DELEGATED_USER` (needs domain-wide delegation) to act as the ops mailbox.

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from ..demo import fixtures
 from ..timeutil import parse_iso, utcnow
 from .base import Connector, NOrder, NOrderLine, NSale, NShipment, NStock, SyncBatch, register
+from .files import FileImports
 
 ORDERS_QUERY = """
 query Orders($cursor: String, $query: String) {
@@ -55,12 +56,14 @@ FULFILLMENT_STATUS_MAP = {"DELIVERED": "delivered", "OUT_FOR_DELIVERY": "out_for
 
 
 @register
-class ShopifyConnector(Connector):
+class ShopifyConnector(FileImports, Connector):
     key = "shopify"
     name = "Shopify"
     category = "commerce"
     capabilities = ("orders", "inventory", "sales", "shipments")
     settings_keys = ("SHOPIFY_SHOP", "SHOPIFY_ACCESS_TOKEN")
+    import_folder_key = "SHOPIFY_IMPORT_FOLDER_ID"
+    import_query_key = "SHOPIFY_IMPORT_GMAIL_QUERY"
     docs_url = "https://shopify.dev/docs/api/admin-graphql"
     status_note = "Live sync built (GraphQL Admin API); not yet run against your store."
 
@@ -76,6 +79,11 @@ class ShopifyConnector(Connector):
         if body.get("errors"):
             raise RuntimeError(f"Shopify GraphQL error: {body['errors']}")
         return body["data"]
+
+    def test(self) -> str:
+        with self.http() as client:
+            shop = self._graphql(client, "{ shop { name myshopifyDomain } }", {})["shop"]
+        return f"Connected to {shop['name']} ({shop['myshopifyDomain']})"
 
     def pull_live(self, since: datetime | None) -> SyncBatch:
         since = since or utcnow() - timedelta(days=int(self.setting("SHOPIFY_BACKFILL_DAYS", "90")))

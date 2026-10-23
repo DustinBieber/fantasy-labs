@@ -13,6 +13,7 @@ from ..demo import fixtures
 from ..timeutil import parse_iso, utcnow
 from ._util import as_list, to_dec, to_int, truthy
 from .base import Connector, NLocation, NProduct, NSale, NStock, SyncBatch, register
+from .files import FileImports
 
 API = "https://api.lightspeedapp.com/API/V3/Account/{account}"
 TOKEN_URL = "https://cloud.lightspeedapp.com/auth/oauth/token"
@@ -37,13 +38,15 @@ def _kv_set(key: str, value: str) -> None:
 
 
 @register
-class LightspeedConnector(Connector):
+class LightspeedConnector(FileImports, Connector):
     key = "lightspeed"
     name = "Lightspeed Retail POS"
     category = "pos"
     capabilities = ("inventory", "sales")
     settings_keys = ("LIGHTSPEED_ACCOUNT_ID", "LIGHTSPEED_CLIENT_ID", "LIGHTSPEED_CLIENT_SECRET",
                      "LIGHTSPEED_REFRESH_TOKEN")
+    import_folder_key = "LIGHTSPEED_IMPORT_FOLDER_ID"
+    import_query_key = "LIGHTSPEED_IMPORT_GMAIL_QUERY"
     docs_url = "https://developers.lightspeedhq.com/retail/"
     status_note = "Live: R-Series V3 Shop, Item (with ItemShops) and Sale (with SaleLines), OAuth with token rotation."
 
@@ -105,6 +108,13 @@ class LightspeedConnector(Connector):
             else:
                 break
         return out
+
+    def test(self) -> str:
+        with self.http() as client:
+            body = self._get(client, API.format(account=self.setting("LIGHTSPEED_ACCOUNT_ID")) + ".json")
+        acct = body.get("Account") or {}
+        acct = acct[0] if isinstance(acct, list) else acct
+        return f"Connected to account {acct.get('accountID', '?')} ({acct.get('name', '')})"
 
     def pull_live(self, since: datetime | None) -> SyncBatch:
         since = since or utcnow() - timedelta(days=int(self.setting("LIGHTSPEED_BACKFILL_DAYS", "90")))
