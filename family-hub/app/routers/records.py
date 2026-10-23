@@ -2,13 +2,14 @@
 import datetime as dt
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import HealthRecord, Homework, Integration, Member, Milestone
 from ..security import current_member, ensure_self_or_parent, get_owned, require_parent
-from ..services import google
+from ..services import files, google
 from ..services.chores import award
 from ..services.notify import raise_alert
 
@@ -226,7 +227,7 @@ def delete_health(rec_id: int, me: Member = Depends(require_parent), db: Session
     return {"ok": True}
 
 
-# ---------------------------------------------------------------- attachments (Google Drive)
+# ---------------------------------------------------------------- attachments (Google Drive or the hub's disk)
 
 ATTACHABLE = {"homework": (Homework, homework_out), "milestones": (Milestone, milestone_out),
               "health": (HealthRecord, health_out)}
@@ -243,14 +244,23 @@ async def attach(kind: str, obj_id: int, file: UploadFile = File(...), me: Membe
         raise HTTPException(403, "Parents only")
     if kind == "homework":
         ensure_self_or_parent(me, obj.member_id)
-    integ = db.query(Integration).filter_by(family_id=me.family_id, provider="google").first()
-    if not integ:
-        raise HTTPException(400, "Connect Google in Settings to store files in Drive")
     content = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "Files are limited to 25 MB")
-    info = google.drive_upload(db, integ, file.filename or "upload", content,
-                               file.content_type or "application/octet-stream")
+    integ = db.query(Integration).filter_by(family_id=me.family_id, provider="google").first()
+    if integ and (me.family.settings or {}).get("file_storage", "google") == "google":
+        info = google.drive_upload(db, integ, file.filename or "upload", content,
+                                   file.content_type or "application/octet-stream")
+    else:
+        info = files.save(kind, obj_id, file.filename or "upload", content)
     obj.attachments = [*(obj.attachments or []), info]
     db.commit()
     return out(obj)
+
+
+@router.get("/files/{rel:path}", include_in_schema=False)
+def get_file(rel: str, sig: str = ""):
+    path = files.resolve(rel, sig)
+    if path is None:
+        raise HTTPException(404, "File not found")
+    return FileResponse(path, filename=path.name.split("-", 1)[-1], content_disposition_type="inline")

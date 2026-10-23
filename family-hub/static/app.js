@@ -267,6 +267,8 @@ VIEWS.today = async () => {
       <div class="muted">${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</div></div>
       ${!isParent() ? `<span class="chip brand">⭐ ${d.me.points} points</span><span class="chip">${money(d.me.wallet_cents)}</span>` : ""}</div>
     ${crit}${pending}
+    ${["default", "granted", "needs-install"].includes(pushState()) && !localStore("fh_push_nag") ? `<div class="banner info row"><span class="grow">🔔 Get alerts on this phone for free.</span>
+      <a href="#settings">Set up</a><button class="small ghost" data-act="dismissPushNag" aria-label="Dismiss">✕</button></div>` : ""}
     <h2>Today's chores</h2>${choreList(d.chores, "No chores today 🎉")}
     <h2>Coming up</h2><div class="list">${evs || `<div class="empty">Nothing on the calendar today or tomorrow.</div>`}</div>
     <h2>Homework due soon</h2>${homeworkList(d.homework)}
@@ -301,7 +303,7 @@ function homeworkList(items) {
         <div class="small muted">${isParent() ? esc(nameOf(h.member_id)) + " · " : ""}Due ${dayLabel(h.due_date)}${h.points ? ` · ⭐ ${h.points}` : ""}</div>
         ${attachLinks(h.attachments)}</div>
       ${late ? `<span class="chip bad">Late</span>` : ""}
-      <label class="btn small" title="Attach to Google Drive">📎<input type="file" hidden data-upload="homework" data-id="${h.id}"></label>
+      <label class="btn small" title="Attach a file">📎<input type="file" hidden data-upload="homework" data-id="${h.id}"></label>
     </div>`;
   }).join("")}</div>`;
 }
@@ -424,7 +426,7 @@ VIEWS.homework = async () => {
       ${isParent() ? `<label>Bonus points<input name="points" type="number" min="0" value="0"></label>` : ""}</div>
       <datalist id="subjects">${["Math", "Reading", "Science", "Spanish", "History", "Writing", "Art", "Music"].map((s) => `<option value="${s}">`).join("")}</datalist>
       <button class="primary">Add</button></form></details>
-    <p class="small muted">Tap the circle to move between to-do → working on it → done. 📎 attaches a photo or file to Google Drive.</p>`;
+    <p class="small muted">Tap the circle to move between to-do → working on it → done. 📎 attaches a photo or file.</p>`;
 };
 
 // ---------- milestones
@@ -441,7 +443,7 @@ VIEWS.milestones = async () => {
     <div class="timeline" style="margin-top:18px">${items.map((m) => `<div class="card"><div class="row">
       ${avatar(member(m.member_id), 28)}<div class="grow"><h3>${esc(m.title)}</h3>
       <div class="small muted">${parseYmd(m.date).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })} · ${esc(m.category)}</div></div>
-      <label class="btn small" title="Add a photo (Google Drive)">📷<input type="file" accept="image/*,video/*,application/pdf" hidden data-upload="milestones" data-id="${m.id}"></label>
+      <label class="btn small" title="Add a photo">📷<input type="file" accept="image/*,video/*,application/pdf" hidden data-upload="milestones" data-id="${m.id}"></label>
       ${isParent() ? `<button class="small ghost" data-act="delMilestone" data-id="${m.id}" aria-label="Delete">✕</button>` : ""}</div>
       ${m.notes ? `<p>${esc(m.notes)}</p>` : ""}${attachLinks(m.attachments)}</div>`).join("") || `<div class="card muted">Firsts, wins and big days go here.</div>`}</div>`;
 };
@@ -516,7 +518,7 @@ VIEWS.health = async () => {
     return `<h2>${label}</h2><div class="list">${rows.map((r) => `<div class="item">${avatar(member(r.member_id), 28)}<div class="grow">
       <div class="title">${esc(r.title)}${r.value ? ` — ${esc(r.value)} ${esc(r.unit)}` : ""}</div>
       <div class="small muted">${r.date ? dayLabel(r.date) : ""}${r.next_due ? ` · next due ${dayLabel(r.next_due)}` : ""}${r.notes ? " · " + esc(r.notes) : ""}</div>${attachLinks(r.attachments)}</div>
-      ${isParent() ? `<label class="btn small" title="Attach a document (Google Drive)">📎<input type="file" hidden data-upload="health" data-id="${r.id}"></label>
+      ${isParent() ? `<label class="btn small" title="Attach a document">📎<input type="file" hidden data-upload="health" data-id="${r.id}"></label>
       <button class="small ghost" data-act="delHealth" data-id="${r.id}" aria-label="Delete">✕</button>` : ""}</div>`).join("")}</div>`;
   }).join("");
   return `<div class="top"><h1 class="grow">Health</h1>
@@ -537,7 +539,8 @@ VIEWS.health = async () => {
 // ---------- map
 
 VIEWS.map = async () => {
-  const [people, fences] = await Promise.all([api("GET", "/api/location/latest"), api("GET", "/api/geofences")]);
+  const [people, fences, fam] = await Promise.all([api("GET", "/api/location/latest"), api("GET", "/api/geofences"),
+    isParent() ? api("GET", "/api/family") : Promise.resolve(null)]);
   S._mapData = { people, fences };
   const sharing = S.watchId != null;
   return `<div class="top"><h1 class="grow">Where is everyone</h1>
@@ -558,8 +561,51 @@ VIEWS.map = async () => {
       <label class="inline"><input type="checkbox" name="notify_enter" checked> Alert on arrive</label>
       <label class="inline"><input type="checkbox" name="notify_leave" checked> Alert on leave</label>
       <button class="primary">Save place</button></form></details>` : ""}
-    <p class="small muted">The web app shares location while it's open. For background tracking, use the OwnTracks app pointed at your location webhook (Settings → Webhooks).</p>`;
+    ${isParent() ? autoLocation(fam, fences) : `<p class="small muted">Your location is shared while this app is open.</p>`}`;
 };
+
+function autoLocation(fam, fences) {
+  const hasHome = fences.some((f) => f.name.trim().toLowerCase() === "home");
+  const who = intOrNull(localStore("fh_sc_member")) ?? S.members[0]?.id;
+  const url = (path, params) => `${fam.hook_base}/${path}?member=${who}${params}`;
+  const place = esc(localStore("fh_sc_place") || "Home");
+  const st = fam.settings;
+  return `<h2>Automatic location — no extra apps</h2>
+    <div class="card stack"><h3>1 · Home Wi-Fi presence</h3>
+      <div class="small muted">The hub notices family phones on your home Wi-Fi. Works for iPhone and Android with nothing installed.
+        It powers “arrived home / left home” and the “nobody's home but the door is unlocked” alert.</div>
+      ${hasHome ? "" : `<div class="small" style="color:var(--warn)">Add a place named <strong>Home</strong> above first.</div>`}
+      <label class="inline"><input type="checkbox" data-act="wifiPresence" ${st.wifi_presence ? "checked" : ""}> Detect phones on home Wi-Fi</label>
+      ${st.wifi_presence && fam.wifi_scan.last_scan ? (fam.wifi_scan.error
+        ? `<div class="small" style="color:var(--bad)">Last scan failed: ${esc(fam.wifi_scan.error)}. On the Mac, allow python under System Settings → Privacy &amp; Security → Local Network.</div>`
+        : `<div class="small muted">Last scan ${ago(fam.wifi_scan.last_scan)}: ${fam.wifi_scan.devices} devices on the network.</div>`) : ""}
+      <div class="list">${S.members.map((m) => `<div class="item">${avatar(m, 28)}<div class="grow"><div class="title">${esc(m.name)}</div>
+        <div class="small muted">${m.wifi_macs.length ? m.wifi_macs.join(", ") + (m.wifi_last_seen ? ` · seen ${ago(m.wifi_last_seen)}` : " · not seen yet") : "No phone added"}</div></div>
+        <button class="small" data-act="setMacs" data-id="${m.id}">${m.wifi_macs.length ? "Edit" : "Add phone"}</button></div>`).join("")}</div>
+      <div class="small muted">Find a phone's Wi-Fi address: <strong>iPhone</strong> Settings → Wi-Fi → ⓘ next to your network → set
+        <em>Private Wi-Fi Address</em> to <strong>Fixed</strong>, then copy <em>Wi-Fi Address</em>.
+        <strong>Android</strong> Settings → Network → Wi-Fi → your network → Privacy: use device MAC (or note the randomized one shown).</div>
+      <div><button class="small" data-act="scanLan">Show devices on the network now</button></div><div id="lanList"></div></div>
+
+    <div class="card stack" style="margin-top:10px"><h3>2 · iPhone Shortcuts (built in) — arrive & leave anywhere</h3>
+      <div class="row"><label>Phone of<select data-act="scMember">${memberOptions(who)}</select></label>
+        <label>Place<select data-act="scPlace">${fences.map((f) => `<option ${f.name === place ? "selected" : ""}>${esc(f.name)}</option>`).join("") || "<option>Home</option>"}</select></label></div>
+      <ol class="small" style="margin:0;padding-left:20px">
+        <li>On that iPhone open <strong>Shortcuts</strong> → <strong>Automation</strong> → <strong>+</strong> → <strong>Arrive</strong>.</li>
+        <li>Choose the place's location, pick <strong>Run Immediately</strong> (turn off Notify When Run), tap <strong>Next</strong> → <strong>New Blank Automation</strong>.</li>
+        <li>Add the action <strong>Get Contents of URL</strong> and paste:<div class="copy">${esc(url("presence", `&place=${encodeURIComponent(place)}&event=arrive`))}</div></li>
+        <li>Make a second automation with <strong>Leave</strong> and this URL:<div class="copy">${esc(url("presence", `&place=${encodeURIComponent(place)}&event=leave`))}</div></li>
+      </ol>
+      <details class="small"><summary><strong>Optional: send the exact location on a schedule</strong></summary>
+        <ol style="padding-left:20px">
+          <li>New automation → <strong>Time of Day</strong> (or <strong>Charger</strong> → disconnected) → Run Immediately → New Blank Automation.</li>
+          <li>Add <strong>Get Current Location</strong>.</li>
+          <li>Add <strong>Get Contents of URL</strong> with this URL, tap ▸ → Method <strong>POST</strong>, Request Body <strong>JSON</strong>:
+            add field <code>lat</code> = Current Location → tap it → <strong>Latitude</strong>; field <code>lng</code> = Current Location → <strong>Longitude</strong>.
+            <div class="copy">${esc(url("location", ""))}</div></li>
+        </ol></details>
+      <div class="small muted">Android phones: Wi-Fi presence (above) covers home, and the app shares location while it's open.</div></div>`;
+}
 
 MOUNT.map = () => {
   if (!window.L) { $("#map").innerHTML = `<div class="empty">Map library didn't load. Check your connection.</div>`; return; }
@@ -617,6 +663,66 @@ function stopSharing() {
   localStore("fh_share", null);
 }
 
+// ---------- push notifications (free; iPhone needs the app added to the Home Screen first)
+
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+function pushState() {
+  if (pushSupported()) return Notification.permission === "granted" ? (localStore("fh_push") === "1" ? "on" : "granted") : Notification.permission;
+  return isIOS() && !isStandalone() ? "needs-install" : "unsupported";
+}
+
+function b64ToBytes(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function enablePush() {
+  // requestPermission must be the first thing in the tap handler or iOS ignores it.
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("Notifications were not allowed. You can turn them on in the phone's Settings.");
+  const reg = await navigator.serviceWorker.ready;
+  const { public_key } = await api("GET", "/api/push/key");
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) await sub.unsubscribe().catch(() => {});  // re-subscribe in case the server key changed
+  sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(public_key) });
+  const json = sub.toJSON();
+  await api("POST", "/api/push/subscribe", { endpoint: json.endpoint, keys: json.keys, device: navigator.userAgent.slice(0, 120) });
+  localStore("fh_push", "1");
+  await api("POST", "/api/push/test");
+  toast("Notifications on 🔔");
+}
+
+async function disablePush() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    await api("POST", "/api/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
+    await sub.unsubscribe();
+  }
+  localStore("fh_push", null);
+  toast("Notifications off on this device");
+}
+
+function pushCard() {
+  const st = pushState();
+  const body = {
+    "on": `<span class="chip good">On for this device</span> <button class="small" data-act="testPush">Send a test</button> <button class="small" data-act="disablePush">Turn off</button>`,
+    "granted": `<button class="primary" data-act="enablePush">🔔 Turn on notifications</button>`,
+    "default": `<button class="primary" data-act="enablePush">🔔 Turn on notifications</button>`,
+    "denied": `<span class="chip bad">Blocked</span><div class="small muted">Allow notifications for Family Hub in this device's Settings, then reload.</div>`,
+    "needs-install": `<div class="small">On iPhone/iPad, notifications only work from the Home Screen app:<br>
+      1. Tap <strong>Share</strong> <span aria-hidden="true">⎋</span> in Safari → <strong>Add to Home Screen</strong><br>
+      2. Open Family Hub from the new icon and sign in<br>3. Come back here and turn notifications on</div>`,
+    "unsupported": `<div class="small muted">This browser can't receive notifications. Use Safari on iPhone (from the Home Screen icon) or Chrome on Android.</div>`,
+  }[st];
+  return `<div class="card stack"><h3>Notifications on this device</h3>
+    <div class="small muted">Free alerts to this phone — door, location, chores, rewards. No extra app needed.</div>${body}</div>`;
+}
+
 // ---------- doors
 
 function lockCard(l) {
@@ -652,11 +758,25 @@ VIEWS.home = async () => {
     <details class="add card"><summary>+ Add a lock</summary><form class="stack" data-form="addLock"><div class="fields">
       <label>Name<input name="name" required value="Front Door"></label>
       <label>Connected through<select name="provider">
-        <option value="webhook">Webhook (Philips → Alexa/Google Home/IFTTT/HA automation)</option>
+        <option value="apple_home">Apple Home (via Shortcuts on the Mac) — free</option>
+        <option value="webhook">Webhook (status only, from an automation)</option>
         <option value="homeassistant">Home Assistant (status + lock/unlock)</option>
         <option value="simulated">Demo lock (try the app)</option></select></label>
-      <label>Lock ID<input name="external_id" required placeholder="lock.front_door or any short name"></label></div>
+      <label>Lock ID<input name="external_id" required placeholder="Front Door (Apple Home name) or lock.front_door"></label></div>
       <button class="primary">Add lock</button></form>
+      <details class="small" style="margin-top:10px"><summary><strong>Apple Home setup (Philips Matter locks, e.g. 4000 series)</strong></summary>
+        <ol style="padding-left:20px">
+          <li>Add the lock to the <strong>Home</strong> app on your iPhone (scan its Matter code). Remote access needs a HomePod or Apple TV as home hub.</li>
+          <li>On the Mac, open <strong>Shortcuts</strong> and make a shortcut named <code>Lock Front Door</code> with the Home action
+            <strong>Control Home</strong> → Front Door → Lock. Make <code>Unlock Front Door</code> the same way.
+            (Use your lock's name in place of “Front Door”; enter that name as the Lock ID here.)</li>
+          <li>Optional: <code>Status Front Door</code> with <strong>Get state of Front Door</strong> → Current Lock State, so the hub can check it every minute.</li>
+          <li>For instant alerts: in the Home app → Automation → <strong>+</strong> → <strong>An Accessory is Controlled</strong> → Front Door → <em>Unlocks</em> →
+            choose <strong>Convert to Shortcut</strong> → add <strong>Get Contents of URL</strong> with
+            <div class="copy">${esc(fam.webhooks.lock)}?lock=Front%20Door&amp;event=unlocked</div>
+            Repeat for <em>Locks</em> with <code>event=locked</code>.</li>
+        </ol>
+        <p class="muted">Wi-Fi-only Philips models that don't appear in Apple Home: use the Philips app for control, or Home Assistant (free, can run on the Mac).</p></details>
       <div class="small muted" style="margin-top:10px">Webhook URL for your automations:<div class="copy">${esc(fam.webhooks.lock)}</div>
       POST JSON like <code>{"lock": "lock.front_door", "event": "unlocked", "actor": "Keypad", "battery": 80}</code>.
       Events: locked, unlocked, jammed, door_open, door_closed, battery_low.</div></details>
@@ -689,6 +809,7 @@ VIEWS.more = async () => {
 // ---------- settings
 
 const CHANNEL_FORMS = {
+  imessage: { label: "iMessage / text from the Mac (free)", fields: [["to", "Phone numbers or Apple ID emails, comma separated"]] },
   ntfy: { label: "Push (ntfy app — iPhone & Android)", fields: [["topic", "Topic (make it hard to guess)"], ["server", "Server (blank = ntfy.sh)"], ["token", "Access token (optional)"]] },
   twilio_sms: { label: "Text message (SMS via Twilio — Google Messages & iMessage)", fields: [["account_sid", "Account SID"], ["auth_token", "Auth token"], ["from_number", "From number (+1…)"], ["to_numbers", "To numbers, comma separated"]] },
   gmail: { label: "Email (via connected Gmail)", fields: [["to", "Send to (comma separated)"]] },
@@ -697,18 +818,19 @@ const CHANNEL_FORMS = {
 };
 
 VIEWS.settings = async () => {
-  const kidOnly = `<div class="top"><h1 class="grow">Settings</h1></div>
-    <div class="card stack"><label>My color<input type="color" data-act="myColor" value="${esc(S.me.color)}"></label>
+  const kidOnly = `<div class="top"><h1 class="grow">Settings</h1></div>${pushCard()}
+    <div class="card stack" style="margin-top:10px"><label>My color<input type="color" data-act="myColor" value="${esc(S.me.color)}"></label>
     <label class="inline"><input type="checkbox" data-act="myShare" ${S.me.share_location ? "checked" : ""}> Share my location with my parents</label>
     <button data-act="signOut">Sign out</button></div>`;
   if (!isParent()) return kidOnly;
   const [fam, channels, integ] = await Promise.all([api("GET", "/api/family"), api("GET", "/api/notify/channels"), api("GET", "/api/integrations")]);
   const flash = new URLSearchParams(location.hash.split("?")[1] || "").get("google");
-  const kind = localStore("fh_ch_kind") || "ntfy";
+  const kind = CHANNEL_FORMS[localStore("fh_ch_kind")] ? localStore("fh_ch_kind") : "imessage";
   const g = integ.google, ic = integ.icloud, ha = integ.homeassistant;
   const status = (i) => i ? `<span class="chip good">Connected${i.account ? " · " + esc(i.account) : ""}</span>${i.last_error ? `<div class="small" style="color:var(--bad)">${esc(i.last_error)}</div>` : i.last_sync_at ? `<div class="small muted">Synced ${ago(i.last_sync_at)}</div>` : ""}` : `<span class="chip">Not connected</span>`;
   return `<div class="top"><h1 class="grow">Settings</h1></div>
     ${flash ? `<div class="banner ${flash === "connected" ? "info" : "critical"}">Google: ${esc(flash)}</div>` : ""}
+    ${pushCard()}
     <h2>Family members</h2><div class="list">${S.members.map((m) => `<div class="item">${avatar(m)}<div class="grow"><div class="title">${esc(m.name)}</div>
       <div class="small muted">${m.role === "parent" ? esc(m.email || "Parent") : `Kid · ${m.has_pin ? "PIN set" : "no PIN"} · ${money(m.weekly_allowance_cents)}/wk`}</div></div>
       ${m.role === "child" ? `<button class="small" data-act="editKid" data-id="${m.id}">Edit</button>` : ""}
@@ -729,6 +851,8 @@ VIEWS.settings = async () => {
     <h2>Connected accounts</h2><div class="grid two">
       <div class="card stack"><h3>Google</h3><div class="small muted">Calendar sync, Drive for homework/milestone/health files, Gmail for alert emails.</div>${status(g)}
         ${g ? `<label>Calendar ID<input data-act="gcalId" value="${esc(g.options.calendar_id || "primary")}"></label>
+          <label>Save attachments to<select data-act="fileStorage"><option value="google">Google Drive</option>
+            <option value="local" ${fam.settings.file_storage === "local" ? "selected" : ""}>The hub's Mac (iCloud Drive folder)</option></select></label>
           <button class="small danger" data-act="disconnect" data-provider="google">Disconnect</button>`
           : integ.google_configured ? `<button class="primary" data-act="connectGoogle">Connect Google</button>`
           : `<div class="small" style="color:var(--warn)">The server needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first (see README).</div>`}</div>
@@ -835,6 +959,24 @@ const ACT = {
     S.members = await api("GET", "/api/members");
     toast("Saved");
   },
+  enablePush: () => enablePush(),
+  disablePush: () => disablePush(),
+  testPush: async () => { const r = await api("POST", "/api/push/test"); toast(r.sent ? "Test sent 🔔" : "No subscribed device; turn notifications off and on again"); return "noRender"; },
+  dismissPushNag: () => { localStore("fh_push_nag", "1"); },
+  setMacs: async (d) => {
+    const m = member(Number(d.id));
+    const v = prompt(`${m.name}'s phone Wi-Fi address(es), comma separated (e.g. 4a:1b:2c:3d:4e:5f):`, m.wifi_macs.join(", "));
+    if (v === null) return "noRender";
+    await api("PATCH", `/api/members/${m.id}`, { wifi_macs: v.split(",").map((x) => x.trim()).filter(Boolean) });
+    S.members = await api("GET", "/api/members");
+  },
+  scanLan: async () => {
+    $("#lanList").innerHTML = `<div class="small muted">Scanning…</div>`;
+    const devs = await api("GET", "/api/presence/devices");
+    $("#lanList").innerHTML = `<div class="list">${devs.map((d) => `<div class="item small"><div class="grow"><strong>${esc(d.name || "Unknown device")}</strong>
+      <div class="muted">${esc(d.ip)} · ${esc(d.mac)}</div></div>${d.member ? `<span class="chip good">${esc(d.member)}</span>` : ""}</div>`).join("") || `<div class="empty">Nothing found.</div>`}</div>`;
+    return "noRender";
+  },
   rotateHooks: async () => {
     if (!confirm("Old webhook URLs will stop working. Update your automations afterwards. Continue?")) return "noRender";
     await api("POST", "/api/family/rotate-hook-token");
@@ -842,6 +984,10 @@ const ACT = {
 };
 
 const CHANGE = {
+  fileStorage: async (el) => { await api("PATCH", "/api/family", { settings: { file_storage: el.value } }); toast("Saved"); return "noRender"; },
+  wifiPresence: async (el) => { await api("PATCH", "/api/family", { settings: { wifi_presence: el.checked } }); toast(el.checked ? "Watching home Wi-Fi" : "Wi-Fi presence off"); return "noRender"; },
+  scMember: (el) => localStore("fh_sc_member", el.value),
+  scPlace: (el) => localStore("fh_sc_place", el.value),
   toggleHwDone: (el) => localStore("fh_hw_done", el.checked ? "1" : null),
   healthMember: (el) => localStore("fh_health_member", el.value || null),
   chKind: (el) => localStore("fh_ch_kind", el.value),
@@ -954,10 +1100,16 @@ async function upload(input) {
   if (!file) return "noRender";
   const fd = new FormData();
   fd.append("file", file);
-  toast("Uploading to Google Drive…");
+  toast("Uploading…");
   await api("POST", `/api/attachments/${input.dataset.upload}/${input.dataset.id}`, fd);
-  toast("Saved to Drive 📎");
+  toast("Saved 📎");
 }
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest(".copy");
+  if (!el || !navigator.clipboard) return;
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => toast("Copied")).catch(() => {});
+});
 
 window.addEventListener("hashchange", render);
 // Keep the dashboard and alert badge fresh while the app is open.

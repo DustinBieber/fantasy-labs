@@ -3,6 +3,10 @@
 Philips smart deadbolts (Philips Home Access) do not publish a public developer API, so the hub
 reaches them through one of these providers:
 
+  apple_home    - The lock is in the Apple Home app (Matter models like the Philips 4000 series pair
+                  straight into Apple Home; needs a HomePod/Apple TV as home hub). The Mac runs Shortcuts
+                  named "Lock <name>", "Unlock <name>" and optionally "Status <name>". For instant
+                  status, an Apple Home automation ("When <lock> unlocks") opens the lock webhook URL.
   homeassistant - Home Assistant exposes the lock as `lock.<name>`. Matter models (e.g. the Philips
                   4000 series, Matter over Thread) pair with HA's Matter integration; Wi-Fi models need a
                   community integration. The hub polls its state and can lock/unlock it.
@@ -19,7 +23,7 @@ from sqlalchemy.orm import Session
 from ..crypto import decrypt_json
 from ..models import Family, Geofence, GeofenceState, Integration, Lock, LockEvent, Member
 from ..timeutil import local_now, utcnow
-from . import http
+from . import http, macos
 from .notify import raise_alert
 
 STATE_EVENTS = {"locked": "locked", "unlocked": "unlocked", "jammed": "jammed"}
@@ -137,6 +141,12 @@ def command(db: Session, family: Family, lock: Lock, action: str, actor: Member)
     if lock.provider == "webhook":
         raise HTTPException(400, "This lock reports status only. Use the Philips app (or connect it through "
                                  "Home Assistant) to lock or unlock it remotely.")
+    if lock.provider == "apple_home":
+        out = macos.run_shortcut(f"{'Lock' if action == 'lock' else 'Unlock'} {lock.external_id}")
+        state = parse_state(out)
+        if state == "jammed":
+            record_event(db, family, lock, "jammed", actor=actor.name, source="apple_home")
+            return
     if lock.provider == "homeassistant":
         ha = _ha(db, family.id)
         with http.client() as c:
@@ -145,8 +155,31 @@ def command(db: Session, family: Family, lock: Lock, action: str, actor: Member)
     record_event(db, family, lock, "locked" if action == "lock" else "unlocked", actor=actor.name, source="app")
 
 
+def parse_state(text: str) -> str | None:
+    """Read a lock state out of a Shortcut's output ("Locked", "Unsecured", HomeKit codes 0/1/2...)."""
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    if "jam" in t or t == "2":
+        return "jammed"
+    if "unlock" in t or "unsecur" in t or t in ("0", "false", "no"):
+        return "unlocked"
+    if "lock" in t or "secur" in t or t in ("1", "true", "yes"):
+        return "locked"
+    return None
+
+
 def poll(db: Session, family: Family) -> None:
-    """Refresh Home Assistant-backed locks (the webhook covers instant updates; this catches misses)."""
+    """Refresh locks the hub can query (the webhook covers instant updates; this catches misses)."""
+    apple = db.query(Lock).filter_by(family_id=family.id, provider="apple_home").all()
+    if apple:
+        available = set(macos.list_shortcuts())
+        for lock in apple:
+            name = f"Status {lock.external_id}"
+            if name in available:
+                state = parse_state(macos.run_shortcut(name))
+                if state:
+                    record_event(db, family, lock, state, source="apple_home")
     locks = db.query(Lock).filter_by(family_id=family.id, provider="homeassistant").all()
     if not locks:
         return

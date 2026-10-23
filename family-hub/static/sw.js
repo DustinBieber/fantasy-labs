@@ -1,5 +1,5 @@
 // Caches the app shell so the hub opens instantly (and offline); API calls always go to the network.
-const CACHE = "family-hub-v1";
+const CACHE = "family-hub-v2";
 const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -22,4 +22,30 @@ self.addEventListener("fetch", (e) => {
       return resp;
     }).catch(() => caches.match(e.request).then((r) => r || caches.match("/index.html")))
   );
+});
+
+// Web Push: alerts arrive here even when the app is closed (iPhone: only for the home-screen app).
+self.addEventListener("push", (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch { data = { title: e.data?.text() }; }
+  const title = data.title || "Family Hub";
+  e.waitUntil(self.registration.showNotification(title, {
+    body: data.body || "",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: data.id ? `alert-${data.id}` : undefined,
+    requireInteraction: data.severity === "critical",
+    data: { url: data.kind === "door" ? "/#home" : "/#alerts" },
+  }));
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = e.notification.data?.url || "/#alerts";
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+    for (const w of wins) {
+      if ("focus" in w) { w.navigate(url).catch(() => {}); return w.focus(); }
+    }
+    return self.clients.openWindow(url);
+  }));
 });

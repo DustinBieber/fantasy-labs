@@ -1,166 +1,173 @@
 # Family Hub
 
 One place for the whole family: chores with points and rewards, a shared calendar, homework,
-milestones, money, health records, live location with place alerts, and smart-lock door alerts.
-It runs as a small Python server plus an installable web app that works on iPhone, Android and desktop.
+milestones, money, health records, live location with arrive/leave alerts, and smart-lock door alerts.
+It's a small server that runs **free on an always-on Mac**, plus a web app that family members add to
+their iPhone or Android home screen. **Nothing to buy and no App Store apps.**
 
 | Area | What it does |
 |---|---|
-| **Chores & rewards** | One-off, daily, weekly (pick days) or monthly chores. Kids check them off, parents approve, and points are added to an append-only ledger. Kids spend points in a reward shop. Points are held when a kid requests a reward and refunded if a parent declines. Parents can give bonus points or take points away. |
-| **Calendar** | Family events tagged with people. Two-way sync with **Google Calendar** (OAuth) and **iCloud Calendar** (CalDAV), pulled every 15 min. New events can be copied to Google and/or iCloud. |
-| **Homework** | Per-kid assignments with due dates and optional bonus points (awarded once). Attach worksheets or photos to **Google Drive**. |
-| **Milestones** | A timeline of firsts and big days, with photos saved to Drive. |
-| **Money** | Household income and expenses, monthly category budgets (alerts at 80% and when over), kid wallets, and a weekly allowance paid automatically. |
-| **Health** | Appointments, medications, allergies, immunizations and growth/vitals per person. Anything with a "next due" date appears in the daily digest. Kids only see their own records. |
-| **Location** | Live map, places (geofences) with arrive/leave alerts, battery level. Uses the web app while it's open, or **OwnTracks** for background tracking. |
-| **Doors** | Smart-lock status, activity log and lock/unlock. Alerts for a jammed bolt, unlock or open during quiet hours, a door left unlocked or open too long, low battery, and **"nobody's home and the door is unlocked."** |
-| **Alerts** | In-app feed plus push (ntfy), SMS (Twilio), Gmail, Google Chat or any webhook, filtered by severity. A daily 5 pm digest covers tomorrow's events, homework, health items due, and anything waiting for approval. |
+| **Chores & rewards** | One-off, daily, weekly or monthly chores. Kids check them off, parents approve, points are added. Kids spend points in a reward shop (points held while waiting, refunded if declined). Parents can give bonus points or take points away. |
+| **Calendar** | Family events tagged with people. Two-way sync with **Google Calendar** and **iCloud Calendar**. |
+| **Homework** | Per-kid assignments, due dates, optional bonus points, photo or file attachments. |
+| **Milestones** | A timeline of firsts and big days, with photos. |
+| **Money** | Household income and expenses, monthly budgets (alerts at 80% and when over), kid wallets, automatic weekly allowance. |
+| **Health** | Appointments, medications, allergies, immunizations, growth and vitals. "Next due" dates appear in the daily digest. Kids only see their own records. |
+| **Location** | Live map, places with arrive/leave alerts, "who's home." |
+| **Doors** | Smart-lock status, activity log, lock/unlock. Alerts for a jammed bolt, unlock or open during quiet hours, a door left unlocked or open too long, low battery, and **"nobody's home and the door is unlocked."** |
+| **Alerts** | **Free push notifications** to each phone, **iMessage** from the Mac, Gmail, and a daily summary of tomorrow. |
 
-## Quick start
+## What's free, and how each connection works
 
-```bash
-cd family-hub
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env            # optional for local use; fill in later
-uvicorn app.main:app --env-file .env --reload
-```
+| You asked for | How it works | Cost | Extra apps on phones |
+|---|---|---|---|
+| Phone notifications (iPhone & Android) | **Web Push** to the home-screen app (iPhone needs iOS 16.4+) | Free | None |
+| iMessage | The Mac's **Messages** app sends them | Free | None |
+| Text messages to Android / Google Messages | The Mac's Messages app sends SMS through an iPhone with *Text Message Forwarding* turned on. Android phones also get Web Push. | Free (normal texting plan) | None |
+| Google Calendar | Two-way sync (OAuth) | Free | None |
+| Google Drive | Attachments saved to a "Family Hub" folder (app can only see files it creates) | Free | None |
+| Gmail | Alert emails sent from your Gmail account (can't read your inbox) | Free | None |
+| Google Chat | ❌ Not possible on personal Gmail: Google only allows Chat webhooks on paid Workspace accounts. Push and iMessage cover the same need. | — | — |
+| iPhone Calendar | iCloud Calendar sync with an app-specific password | Free | None |
+| iCloud Drive | Attachments can be saved in iCloud Drive on the Mac, so they appear in the Files app on everyone's iPhone | Free | None |
+| Location | ① Home Wi-Fi presence detected by the Mac ② built-in iPhone **Shortcuts** arrive/leave automations ③ live location while the app is open | Free | None (Shortcuts is built in) |
+| Find My / Google location sharing | ❌ No public access for other apps. ①–③ above replace them. | — | — |
+| Philips smart deadbolt | **Apple Home** (Matter models such as the 4000 series): the Mac runs Shortcuts to lock and unlock, and Home automations report status instantly. Other models: webhook or Home Assistant. | Free | None |
+| HTTPS address for phones | **Tailscale Funnel** on the Mac gives a permanent `https://…ts.net` address | Free | None (only the Mac runs Tailscale) |
 
-Open http://localhost:8000, choose **New family**, then add kids in **Settings**. Each kid gets a PIN.
-On a kid's device, choose **Kid**, enter the family code shown in Settings, then tap their name and enter the PIN.
-Interactive API docs are at `/docs`.
+The one piece of extra software is **Tailscale, on the Mac only**. Phones only allow a web app to install,
+send notifications and share location when it's served over `https://`. Tailscale Funnel provides that
+for free without buying a domain. The phones themselves only need Safari or Chrome.
 
-**Install on phones:** Location access and home-screen install need **HTTPS**, so deploy before installing
-(see below). Then, in Safari on iPhone: Share → *Add to Home Screen*. In Chrome on Android: ⋮ → *Install app*.
+## Set up on your Mac mini (about 20 minutes)
 
-Run the tests with `pip install -r requirements-dev.txt && pytest`.
+1. **Get the code onto the Mac.** In Terminal:
+   ```bash
+   git clone https://github.com/dustinbieber/fantasy-labs.git ~/fantasy-labs
+   ```
+   You can also download the ZIP from GitHub and unzip it into your home folder.
+2. **Install Tailscale** from [tailscale.com/download/mac](https://tailscale.com/download/mac) and sign in.
+   The Personal plan is free.
+3. **Run the installer:**
+   ```bash
+   bash ~/fantasy-labs/family-hub/mac/setup.sh
+   ```
+   It installs Python if needed, copies the app to `~/FamilyHub`, and sets it to start automatically and
+   restart if it crashes. It turns on Tailscale Funnel (open the link it prints if Funnel needs enabling),
+   offers to turn off sleep, and prints your address, such as `https://mac-mini.tail1234.ts.net`.
+4. **Keep the Mac logged in.** Go to System Settings → Users & Groups → *Automatically log in as…*. This needs
+   FileVault off. If you keep FileVault on, log in once after every restart. The hub runs in your user
+   session so it can use Messages and Shortcuts.
+5. **Open your address**, choose **New family**, and add the kids (each gets a PIN) in **Settings**.
 
-## Deploying
+To update later, pull the new code (`git -C ~/fantasy-labs pull`) and run `setup.sh` again.
+To uninstall, run `mac/uninstall.sh`; your data in `~/FamilyHub` is kept.
+Logs are in `~/FamilyHub/logs/server.log`. Daily database backups go to `~/FamilyHub/backups` (the last 14 are kept).
 
-The included `Dockerfile` runs everything in a single container. Data lives in `/data`, so mount a volume there.
-Put the container behind HTTPS: Fly.io, Railway, Render, a VPS with Caddy, or a Cloudflare Tunnel to a home server
-all work. Then set:
+### On each family member's phone
+1. Open the hub address in **Safari** (iPhone) or **Chrome** (Android).
+   Kids tap **Kid**, enter the family code from Settings, and use their PIN.
+2. iPhone: Share → **Add to Home Screen**. Android: ⋮ → **Install app**. From then on, open it from the icon.
+3. In the app go to **Settings → Turn on notifications** and allow them. A test notification arrives straight away.
 
-- `FAMILY_HUB_BASE_URL` to the public `https://` URL. Google redirects and webhook URLs are built from it.
-- `FAMILY_HUB_SECRET_KEY` to a Fernet key (command in `.env.example`). OAuth tokens and passwords for
-  integrations are encrypted with it. Back it up.
+### macOS permission prompts (one time, on the Mac's screen)
+The first time the hub sends an iMessage, runs a Shortcut, scans the Wi-Fi, or saves into iCloud Drive, macOS asks
+whether "python" may do so. Click **OK / Allow**. If you missed one, go to System Settings → Privacy & Security →
+**Automation** (Messages), **Local Network**, or **Files & Folders**, and turn it on for python.
 
-Keep **one** server process. The background scheduler runs inside the app.
+## Connecting things
 
-## Connecting your accounts
+### iMessage and text alerts (free, from the Mac)
+1. On the Mac, open **Messages** and sign in with an Apple ID (a family one is fine).
+2. To reach Android phones by SMS: on an iPhone signed into the same Apple ID, go to Settings → Apps → Messages →
+   **Text Message Forwarding** and turn on this Mac.
+3. In the hub go to **Settings → Send alerts somewhere → iMessage / text from the Mac**. Enter phone numbers or Apple ID
+   emails and choose which alerts (Warning+ is a good default). Press **Test** and approve the macOS prompt.
 
-### What connects how
+The hub tries iMessage first and falls back to SMS automatically.
 
-| You asked for | How it works here | Why |
-|---|---|---|
-| Google Calendar | ✅ OAuth, two-way sync | Official API |
-| Google Drive | ✅ OAuth, `drive.file` scope (only files this app creates, kept in a "Family Hub" folder) | Official API |
-| Gmail | ✅ OAuth, `gmail.send` (sends alert emails; cannot read your inbox) | Reading mail needs a restricted scope that requires a Google security assessment |
-| Google Chat | ✅ Alerts posted into a Space through an incoming webhook | Webhooks need a Google Workspace account. Personal Gmail accounts can't add them. |
-| Google Messages | ✅ Via SMS (Twilio). Texts arrive in Google Messages. | Google Messages has no public API |
-| iPhone Calendar | ✅ iCloud CalDAV with an app-specific password, two-way | Apple has no OAuth calendar API |
-| iMessage | ✅ Via SMS (Twilio) to the iPhone's Messages app, or **ntfy** push | iMessage has no public API |
-| iPhone/Android push | ✅ ntfy app (free) | Uses ntfy instead of building native apps |
-| Find My / Google location sharing | ↪ Use the web app or OwnTracks instead | Neither Find My nor Google location sharing has a public API |
-| Philips smart deadbolt | ✅ Through Home Assistant (status and control) or a webhook (status only) | Philips doesn't publish a developer API |
-
-### Google (Calendar, Drive, Gmail)
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the
-   **Google Calendar API**, **Google Drive API** and **Gmail API**.
-2. Under *OAuth consent screen*, set up an External app and add your family's Google accounts as **test users**.
-   No Google review is needed for a family-sized group of test users.
-3. Under *Credentials*, create an **OAuth client ID** of type *Web application*. Set the authorized redirect URI to
-   `https://YOUR-HUB/api/integrations/google/callback`.
-4. Put the ID and secret in `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` and restart the server.
-5. In the app, go to **Settings → Connect Google**. Change *Calendar ID* if you want a shared family calendar
-   instead of `primary` (find it in Google Calendar → calendar settings → *Integrate calendar*).
-
-### iCloud Calendar (iPhone)
-1. At [appleid.apple.com](https://appleid.apple.com), go to *Sign-In and Security → App-Specific Passwords* and generate one.
-2. In **Settings → iCloud Calendar**, enter the Apple ID and that password. Optionally enter the calendar's name
-   (for example "Family"). Without a name, the first calendar is used.
-
-### Alerts to phones
-Go to **Settings → Send alerts somewhere** and pick a minimum severity for each channel:
-- **Push (ntfy):** Install the ntfy app ([iOS](https://apps.apple.com/app/ntfy/id1625396347) /
-  [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy)) and subscribe to a long, random topic
-  name. Use the same topic here. You can self-host ntfy and set *Server* if you want full privacy.
-- **SMS (Twilio):** Enter the Account SID, auth token, your Twilio number and the family's numbers.
-  US numbers need A2P 10DLC registration in Twilio.
-- **Email:** Requires Google to be connected. Sends from that account.
-- **Google Chat:** In a Space, open *Apps & integrations → Webhooks*, create one and paste its URL here.
-- **Webhook:** The hub POSTs JSON `{family, kind, severity, title, body}` to the URL. Use it with Home Assistant,
-  IFTTT, Zapier or Pushcut (Pushcut can run iPhone Shortcuts).
-
-Use **Test** on each channel to check it. Kid-only notices, such as "chore approved," stay in the app.
-
-### Background location (OwnTracks)
-The web app only shares location while it's open, because iOS doesn't allow web apps to track location in the background.
-For always-on tracking, install **OwnTracks** on each phone:
-*Settings → Connection → Mode: HTTP*. Set the URL to the location webhook from **Settings → Webhooks** and
-replace `<member id>` with that person's ID. OwnTracks sends updates when the person moves significantly, with little battery drain.
-
-On the **Map** tab, add places. Name one **Home** to turn on the "nobody's home and the door is unlocked" alert.
+### Location without extra apps
+Open the **Map** tab:
+1. **Add places.** Tap the map or type coordinates. Name one **Home**.
+2. **Home Wi-Fi presence (iPhone and Android).** Turn on *Detect phones on home Wi-Fi* and add each person's phone
+   Wi-Fi address. On iPhone: Settings → Wi-Fi → ⓘ → *Private Wi-Fi Address: Fixed*, then copy *Wi-Fi Address*.
+   *Show devices on the network now* helps you find them.
+   A phone unseen for 15 minutes counts as away.
+3. **iPhone Shortcuts (built in).** The Map tab shows step-by-step instructions with ready-to-copy links for each
+   person and place. Use *Arrive* and *Leave* automations set to *Run Immediately*. They work anywhere, such as school
+   or work, not just at home.
+4. While the hub app is open, it also shares the exact location.
 
 ### Philips smart deadbolt
-Philips Home Access locks have no public API, so pick one of these:
+Which route depends on your model:
 
-**A. Home Assistant (full control, recommended).** Matter models such as the Philips 4000 series
-(Matter over Thread) pair with Home Assistant's Matter integration. A Thread border router is needed,
-for example a HomePod mini, a Nest Hub (2nd gen) or Home Assistant's SkyConnect/ZBT-1.
-Wi-Fi models may work with the community [`philips_home_access`](https://community.home-assistant.io/t/philips-easykey/996923)
-integration (untested here).
-1. In Home Assistant, go to *Profile → Security* and create a **long-lived access token**.
-2. In Family Hub, go to **Settings → Home Assistant** and enter your HA URL (Nabu Casa or another URL the
-   hub can reach) and the token.
-3. In **Doors**, add a lock with *Home Assistant* as the provider and the entity ID, for example `lock.front_door`.
-4. Optional, for instant updates instead of the once-a-minute poll, add an HA automation that calls the lock webhook:
-   ```yaml
-   rest_command:
-     family_hub_lock:
-       url: "https://YOUR-HUB/api/hooks/YOUR-TOKEN/lock"
-       method: POST
-       content_type: application/json
-       payload: '{"lock": "lock.front_door", "event": "{{ event }}", "actor": "{{ actor }}"}'
-   automation:
-     - trigger: { platform: state, entity_id: lock.front_door }
-       action:
-         - service: rest_command.family_hub_lock
-           data: { event: "{{ trigger.to_state.state }}", actor: "{{ trigger.to_state.context.user_id or '' }}" }
-   ```
+**Matter models (e.g. Philips 4000 series): Apple Home, free, full control**
+1. Add the lock in the **Home** app on your iPhone (scan the Matter code). A HomePod or Apple TV acts as the
+   home hub and Thread border router.
+2. On the Mac, open **Shortcuts** and create `Lock Front Door` (Home action → Front Door → Lock) and
+   `Unlock Front Door`. Optionally create `Status Front Door` (*Get state of* Front Door → Current Lock State) so the
+   hub can check every minute.
+3. In the hub go to **Doors → Add a lock**, choose *Apple Home*, and enter Lock ID `Front Door` (your lock's name in Home).
+4. For instant alerts, go to Home app → Automation → **+** → *An Accessory is Controlled* → Front Door → *Unlocks* →
+   *Convert to Shortcut* → add **Get Contents of URL** with the link shown on the Doors tab
+   (`…/lock?lock=Front%20Door&event=unlocked`). Repeat for *Locks* (`event=locked`).
 
-**B. Webhook only (status and alerts, no remote control).** Have any automation that can see the lock
-(Alexa or Google Home routines through IFTTT, SmartThings, and so on) POST to the lock webhook:
-`{"lock": "Front Door", "event": "unlocked", "actor": "Keypad", "battery": 80}`.
+Apple's Shortcuts Home actions on the Mac were not tested here. If your Mac's Shortcuts app doesn't offer
+them, use step 4 for status and alerts, and lock or unlock from the Home or Philips app.
+
+**Wi-Fi-only models (Philips Home Access app)**
+- Status and alerts: any automation that sees the lock opens the lock webhook URL
+  (`?lock=Front%20Door&event=unlocked`, or a POST with JSON `{"lock","event","actor","battery"}`).
+- Full control: [Home Assistant](https://www.home-assistant.io/installation/macos) runs free on the Mac (in a
+  UTM virtual machine). The community [`philips_home_access`](https://community.home-assistant.io/t/philips-easykey/996923)
+  integration may support these locks but is untested. Connect it under **Settings → Home Assistant** and add the lock with
+  the *Home Assistant* provider. An HA automation can call the lock webhook for instant updates.
+
 Valid events are `locked`, `unlocked`, `jammed`, `door_open`, `door_closed` and `battery_low`.
-Locking and unlocking stay in the Philips app.
+Tune quiet hours, the "left unlocked" timing and the battery threshold on the **Doors** tab.
 
-**C. Demo lock.** Lets you try the Doors tab and the alert rules without hardware.
+### Google Calendar, Drive and Gmail (free)
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Google Calendar API**,
+   **Google Drive API** and **Gmail API**.
+2. Under **OAuth consent screen**, choose External, fill in the app name and your email, and add the three scopes.
+   Then set **Publishing status → In production**. Without this, Google disconnects you every 7 days.
+   You don't need to submit for verification. When you connect, Google shows "Google hasn't verified this app";
+   click **Advanced → Go to Family Hub**. That's expected for a private family app.
+3. Under **Credentials**, create an **OAuth client ID** (*Web application*). Set the authorized redirect URI to
+   `https://YOUR-MAC.ts.net/api/integrations/google/callback`.
+4. Put the ID and secret into `~/FamilyHub/family-hub.env` (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) and re-run `setup.sh`.
+5. In the hub, go to **Settings → Connect Google**. You can also choose whether attachments go to Drive or iCloud Drive there.
 
-Tune the rules on the **Doors** tab: minutes before a "left unlocked/open" alert, quiet hours, low-battery
-threshold, and whether to alert on every unlock.
+### iCloud Calendar
+At [appleid.apple.com](https://appleid.apple.com), go to *Sign-In and Security → App-Specific Passwords* and create one.
+Enter your Apple ID and that password in **Settings → iCloud Calendar**.
 
 ### Other automations
-`POST /api/hooks/YOUR-TOKEN/alert` with `{"title": "Garage left open", "severity": "warning"}` raises an alert from
-any sensor or system. Webhook URLs contain a secret token. Rotate them in Settings if one leaks.
+`…/api/hooks/TOKEN/alert` (POST `{"title": "Garage left open", "severity": "warning"}`) raises an alert from any
+sensor or system. Webhook links contain a secret token. Rotate them in Settings if one leaks.
 
-## Privacy & security notes
-- Each family's data is isolated in the API, and every endpoint checks family ownership.
-- Parents sign in with email and password. Kids sign in with a PIN. Both are hashed with scrypt, and repeated
-  failed attempts lock the account out for 15 minutes.
-- Kids can't see household finances, door controls, other people's health records, or other people's locations.
-- Integration secrets (OAuth tokens, Apple app password, HA token, Twilio token) are encrypted at rest.
-- Location history stays on your server. Nothing is sent to third parties except the alerts you route
-  through the channels you configure.
+## Optional extras (not needed)
+- **ntfy, Twilio, Google Chat (Workspace), generic webhooks** are still available as alert channels.
+- **OwnTracks** gives continuous background GPS if Wi-Fi and Shortcuts aren't enough.
+- **Hosting elsewhere:** the included `Dockerfile` runs on any server. iMessage, Shortcuts and Wi-Fi presence need the Mac.
 
-## Project layout
+## Privacy & security
+- Your data stays on your Mac. Nothing is sent to third parties except the notifications, emails and calendar syncs you set up.
+- Parents sign in with email and password, kids with a PIN. Both are hashed with scrypt, and repeated wrong guesses lock the account out for 15 minutes.
+- Kids can't see household finances, door controls, or anyone else's health records or location.
+- Connected-account secrets are encrypted at rest with the key in `~/FamilyHub/family-hub.env`. Back that file up.
+- Attachment links are signed and unguessable.
+- The hub is reachable from the internet through Tailscale Funnel, protected by the sign-in.
+
+## For developers
+```bash
+cd family-hub && python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt && pytest          # 51 tests, outbound calls mocked
+uvicorn app.main:app --reload                           # http://localhost:8000, API docs at /docs
 ```
-app/
-  main.py            FastAPI app, static files, background scheduler
-  models.py          SQLAlchemy models (one SQLite file by default)
-  routers/           auth, members, chores+rewards, calendar, homework/milestones/health, finances,
-                     location+locks+webhooks, alerts+integrations+dashboard
-  services/          google, icloud, locks, geo, chores, notify, scheduler
-static/              installable web app (vanilla JS, no build step)
-tests/               pytest suite (outbound HTTP is mocked)
+```
+app/            FastAPI app: models, routers (auth, chores, calendar, records, finances, home, hub, push)
+app/services/   google, icloud, push, macos (Messages/Shortcuts), presence (Wi-Fi), geo, locks, files, notify, scheduler
+static/         installable web app (vanilla JS, no build step) + service worker
+mac/            setup.sh / uninstall.sh for an always-on Mac
 ```

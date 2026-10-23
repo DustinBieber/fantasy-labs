@@ -1,6 +1,10 @@
 """Alerts: stored in-app, then fanned out to the family's notification channels.
 
+Every alert is also sent as a free Web Push notification to the home-screen app on each family
+member's phone that should see it (see services/push.py).
+
 Channel kinds and why they exist:
+  imessage    - iMessage (or SMS through a paired iPhone) sent by Messages.app on the Mac running the hub.
   ntfy        - free push notifications to the ntfy app on iPhone and Android.
   twilio_sms  - plain SMS, which lands in Google Messages on Android and Messages on iPhone.
                 (Neither Google Messages nor iMessage offers a public sending API.)
@@ -21,7 +25,7 @@ from . import http
 log = logging.getLogger(__name__)
 
 SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
-CHANNEL_KINDS = ("ntfy", "twilio_sms", "gmail", "google_chat", "webhook")
+CHANNEL_KINDS = ("imessage", "ntfy", "twilio_sms", "gmail", "google_chat", "webhook")
 
 
 def raise_alert(db: Session, family: Family, kind: str, title: str, body: str = "", *,
@@ -48,11 +52,22 @@ def raise_alert(db: Session, family: Family, kind: str, title: str, body: str = 
             delivery[str(ch.id)] = f"error: {exc}"[:300]
     alert.delivery = delivery
     db.commit()
+    min_push = (family.settings or {}).get("push_min_severity", "info")
+    if SEVERITY_RANK[severity] >= SEVERITY_RANK.get(min_push, 0):
+        try:
+            from .push import push_alert  # avoid import cycle
+
+            alert.delivery = {**delivery, "push": push_alert(db, family, alert)}
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            log.warning("Web Push failed: %s", exc)
     return alert
 
 
 def send(db: Session, family: Family, kind: str, config: dict, alert: Alert) -> None:
     sender = {
+        "imessage": _send_imessage,
         "ntfy": _send_ntfy,
         "twilio_sms": _send_twilio,
         "gmail": _send_gmail,
@@ -62,6 +77,15 @@ def send(db: Session, family: Family, kind: str, config: dict, alert: Alert) -> 
     if sender is None:
         raise ValueError(f"Unknown channel kind {kind}")
     sender(db, family, config, alert)
+
+
+def _send_imessage(db, family, config, alert):
+    from . import macos
+
+    icon = {"critical": "🚨 ", "warning": "⚠️ "}.get(alert.severity, "")
+    text = f"{icon}{alert.title}" + (f"\n{alert.body}" if alert.body else "") + f"\n— {family.name} Hub"
+    for recipient in config["to"]:
+        macos.send_message(recipient, text, config.get("service", "auto"))
 
 
 def _send_ntfy(db, family, config, alert):
@@ -116,6 +140,7 @@ def _send_webhook(db, family, config, alert):
 
 
 REQUIRED_FIELDS = {
+    "imessage": ["to"],
     "ntfy": ["topic"],
     "twilio_sms": ["account_sid", "auth_token", "from_number", "to_numbers"],
     "gmail": ["to"],

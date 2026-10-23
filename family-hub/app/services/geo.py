@@ -1,8 +1,11 @@
 """Location pings and geofence enter/leave alerts.
 
-Pings come from the hub's own installable web app (foreground location), or from any tracker that can
-POST to the family webhook: e.g. the OwnTracks app (iPhone/Android, background), Home Assistant's
-companion app, or an iOS Shortcuts automation ("When I arrive/leave ...").
+Sources, all free and without extra apps:
+  - the hub's home-screen web app while it's open (precise pings),
+  - iPhone Shortcuts automations ("When I arrive at / leave Home") hitting the presence webhook,
+    or posting "Get Current Location" to the location webhook,
+  - Wi-Fi presence: the Mac running the hub sees family phones on the home network (services/presence.py).
+OwnTracks (optional app) also works for continuous background tracking.
 """
 import math
 
@@ -44,14 +47,36 @@ def record_ping(db: Session, family: Family, member: Member, lat: float, lng: fl
             continue
         if state is None:
             db.add(GeofenceState(member_id=member.id, geofence_id=fence.id, inside=inside))
+            db.flush()
             continue  # first observation sets a baseline without alerting
-        if state.inside == inside:
-            continue
-        state.inside, state.changed_at = inside, utcnow()
-        verb = "arrived at" if inside else "left"
-        transitions.append(f"{verb} {fence.name}")
-        if (inside and fence.notify_enter) or (not inside and fence.notify_leave):
-            raise_alert(db, family, "location", f"{member.name} {verb} {fence.name}",
-                        severity="info", member_id=member.id, audience=["parent"])
+        if set_inside(db, family, member, fence, inside, state):
+            transitions.append(f"{'arrived at' if inside else 'left'} {fence.name}")
     db.commit()
     return transitions
+
+
+def set_inside(db: Session, family: Family, member: Member, fence: Geofence, inside: bool,
+               state: GeofenceState | None = None, source: str = "") -> bool:
+    """Record that a member is inside/outside a place; alerts on a change. Returns True if it changed."""
+    state = state or db.get(GeofenceState, (member.id, fence.id))
+    if state is None:
+        state = GeofenceState(member_id=member.id, geofence_id=fence.id, inside=not inside)
+        db.add(state)
+    if state.inside == inside:
+        return False
+    state.inside, state.changed_at = inside, utcnow()
+    db.flush()
+    verb = "arrived at" if inside else "left"
+    if (inside and fence.notify_enter) or (not inside and fence.notify_leave):
+        raise_alert(db, family, "location", f"{member.name} {verb} {fence.name}",
+                    f"Detected by {source}." if source else "", severity="info", member_id=member.id,
+                    audience=["parent"])
+    db.commit()
+    return True
+
+
+def find_place(db: Session, family: Family, name: str) -> Geofence | None:
+    for fence in db.query(Geofence).filter_by(family_id=family.id):
+        if fence.name.strip().lower() == name.strip().lower():
+            return fence
+    return None

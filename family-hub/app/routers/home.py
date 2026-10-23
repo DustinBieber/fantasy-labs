@@ -112,12 +112,12 @@ def lock_out(lk: Lock) -> dict:
     return {"id": lk.id, "name": lk.name, "provider": lk.provider, "external_id": lk.external_id,
             "state": lk.state, "door": lk.door, "battery": lk.battery,
             "state_changed_at": iso(lk.state_changed_at), "door_changed_at": iso(lk.door_changed_at),
-            "can_control": lk.provider in ("homeassistant", "simulated")}
+            "can_control": lk.provider in ("apple_home", "homeassistant", "simulated")}
 
 
 class LockIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    provider: str = Field(default="webhook", pattern="^(homeassistant|webhook|simulated)$")
+    provider: str = Field(default="webhook", pattern="^(apple_home|homeassistant|webhook|simulated)$")
     external_id: str = Field(min_length=1, max_length=120)
 
 
@@ -128,6 +128,16 @@ def list_locks(me: Member = Depends(require_parent), db: Session = Depends(get_d
 
 @router.post("/locks")
 def add_lock(body: LockIn, me: Member = Depends(require_parent), db: Session = Depends(get_db)):
+    if body.provider == "apple_home":
+        from ..services import macos
+
+        if not macos.is_mac():
+            raise HTTPException(400, "Apple Home locks need Family Hub running on your Mac")
+        needed = [f"Lock {body.external_id}", f"Unlock {body.external_id}"]
+        missing = [n for n in needed if n not in set(macos.list_shortcuts())]
+        if missing:
+            raise HTTPException(422, "Create these shortcuts in the Shortcuts app on the Mac first: "
+                                     + ", ".join(f"“{n}”" for n in missing))
     lk = Lock(family_id=me.family_id, **body.model_dump(), state="unknown", door="unknown")
     if lk.provider == "simulated":
         lk.state, lk.door = "locked", "closed"
@@ -189,14 +199,27 @@ class LockHookIn(BaseModel):
     battery: int | None = Field(default=None, ge=0, le=100)
 
 
-@router.post("/hooks/{token}/lock")
-def lock_hook(token: str, body: LockHookIn, db: Session = Depends(get_db)):
+@router.api_route("/hooks/{token}/lock", methods=["GET", "POST"])
+async def lock_hook(token: str, request: Request, db: Session = Depends(get_db)):
+    """JSON body, or query string (?lock=Front%20Door&event=unlocked) so an Apple Home automation can just open a URL."""
     fam = _family_by_hook(db, token)
+    data = dict(request.query_params)
+    if request.method == "POST":
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            data.update(payload)
+    try:
+        body = LockHookIn(**data)
+    except ValueError as exc:
+        raise HTTPException(422, f"Bad lock event: {exc}") from exc
     lks = db.query(Lock).filter_by(family_id=fam.id).all()
     lk = next((x for x in lks if x.external_id == body.lock), None) or \
         next((x for x in lks if x.name.lower() == body.lock.lower()), None)
     if lk is None:
-        raise HTTPException(404, f"No lock named '{body.lock}'. Add it on the Home tab first.")
+        raise HTTPException(404, f"No lock named '{body.lock}'. Add it on the Doors tab first.")
     event = body.event.strip().lower()
     # Home Assistant state names: "open" means the door sensor tripped; transitional states carry no news.
     event = {"open": "door_open", "opening": "door_open", "closed": "door_closed"}.get(event, event)
@@ -224,6 +247,48 @@ async def location_hook(token: str, request: Request, member: int, db: Session =
     if m.share_location:
         geo.record_ping(db, fam, m, ping.lat, ping.lng, ping.accuracy_m, ping.battery)
     return []  # OwnTracks expects a JSON array back
+
+
+@router.api_route("/hooks/{token}/presence", methods=["GET", "POST"])
+async def presence_hook(token: str, request: Request, member: int, place: str = "", event: str = "",
+                        db: Session = Depends(get_db)):
+    """For iPhone Shortcuts "Arrive"/"Leave" automations: ?member=3&place=Home&event=arrive (or leave).
+
+    Values may also come in a JSON body. GET is accepted so a bare URL works anywhere.
+    """
+    fam = _family_by_hook(db, token)
+    m = db.get(Member, member)
+    if not m or m.family_id != fam.id:
+        raise HTTPException(404, "Unknown member")
+    if request.method == "POST":
+        try:
+            data = await request.json()
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            place, event = data.get("place", place), data.get("event", event)
+    event = str(event).strip().lower()
+    if event not in ("arrive", "arrived", "enter", "leave", "left", "exit"):
+        raise HTTPException(422, "event must be arrive or leave")
+    fence = geo.find_place(db, fam, str(place) or "Home")
+    if fence is None:
+        raise HTTPException(404, f"No place named '{place}'. Add it on the Map tab.")
+    changed = m.share_location and geo.set_inside(db, fam, m, fence, event in ("arrive", "arrived", "enter"),
+                                                  source="iPhone Shortcut")
+    return {"ok": True, "changed": bool(changed)}
+
+
+@router.get("/presence/devices")
+def lan_devices(me: Member = Depends(require_parent), db: Session = Depends(get_db)):
+    """Devices the hub's computer can see on the home network, to help match phones to people."""
+    from ..services import presence
+
+    try:
+        devices = presence.scan(resolve_names=True)
+    except Exception as exc:
+        raise HTTPException(500, f"Network scan failed: {exc}") from exc
+    owners = {mac: m.name for m in db.query(Member).filter_by(family_id=me.family_id) for mac in (m.wifi_macs or [])}
+    return [{**d, "member": owners.get(d["mac"])} for d in devices]
 
 
 class AlertHookIn(BaseModel):

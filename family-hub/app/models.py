@@ -38,6 +38,9 @@ class Member(Base):
     birthday: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     weekly_allowance_cents: Mapped[int] = mapped_column(Integer, default=0)
     share_location: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Wi-Fi MAC addresses of this person's phone(s), for presence detection from the hub's own network.
+    wifi_macs: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)
+    wifi_last_seen: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
     family: Mapped[Family] = relationship(back_populates="members")
@@ -321,3 +324,22 @@ class OAuthState(Base):
     state: Mapped[str] = mapped_column(String(64), primary_key=True)
     family_id: Mapped[int] = mapped_column(ForeignKey("families.id"))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PushSubscription(Base):
+    """A browser/home-screen-app Web Push endpoint (Apple, Google or Mozilla push service)."""
+    __tablename__ = "push_subscriptions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id", ondelete="CASCADE"), index=True)
+    endpoint: Mapped[str] = mapped_column(String(1000), unique=True)
+    p256dh: Mapped[str] = mapped_column(String(200))
+    auth: Mapped[str] = mapped_column(String(100))
+    device: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ServerKey(Base):
+    """Server-wide generated secrets, e.g. the VAPID key pair for Web Push."""
+    __tablename__ = "server_keys"
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value_enc: Mapped[str] = mapped_column(Text)

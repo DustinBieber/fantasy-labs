@@ -12,6 +12,9 @@ from ..db import get_db
 from ..models import Member, Transaction
 from ..security import current_member, get_owned, hash_secret, require_parent
 from ..services.chores import balance
+from ..services import presence
+from ..services.presence import normalize_mac
+from ..timeutil import iso
 
 router = APIRouter(prefix="/api", tags=["members"])
 
@@ -28,6 +31,7 @@ def member_out(db: Session, m: Member) -> dict:
         "birthday": m.birthday.isoformat() if m.birthday else None,
         "weekly_allowance_cents": m.weekly_allowance_cents, "share_location": m.share_location,
         "has_pin": bool(m.pin_hash), "points": balance(db, m.id), "wallet_cents": wallet_cents(db, m.id),
+        "wifi_macs": m.wifi_macs or [], "wifi_last_seen": iso(m.wifi_last_seen),
     }
 
 
@@ -78,6 +82,7 @@ class MemberPatch(BaseModel):
     birthday: date | None = None
     weekly_allowance_cents: int | None = Field(default=None, ge=0)
     share_location: bool | None = None
+    wifi_macs: list[str] | None = None
 
 
 @router.patch("/members/{member_id}")
@@ -93,6 +98,11 @@ def update_member(member_id: int, body: MemberPatch, me: Member = Depends(curren
         m.password_hash = hash_secret(data.pop("password"))
     if "pin" in data:
         m.pin_hash = hash_secret(data.pop("pin"))
+    if "wifi_macs" in data:
+        try:
+            data["wifi_macs"] = sorted({normalize_mac(x) for x in data["wifi_macs"] if x.strip()})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     for k, v in data.items():
         setattr(m, k, v)
     db.commit()
@@ -117,7 +127,10 @@ def family_out(fam) -> dict:
         "id": fam.id, "name": fam.name, "timezone": fam.timezone, "join_code": fam.join_code,
         "settings": fam.settings or {},
         "webhooks": {"lock": f"{hooks}/lock", "location": f"{hooks}/location?member=<member id>",
+                     "presence": f"{hooks}/presence?member=<member id>&place=Home&event=arrive",
                      "alert": f"{hooks}/alert"},
+        "hook_base": hooks,
+        "wifi_scan": {**presence.status, "last_scan": iso(presence.status["last_scan"])},
     }
 
 
@@ -133,7 +146,8 @@ class FamilyPatch(BaseModel):
 
 
 ALLOWED_SETTINGS = {"unlocked_minutes", "door_open_minutes", "quiet_start", "quiet_end", "notify_all_unlocks",
-                    "battery_low_percent", "allowance_weekday", "digest_hour"}
+                    "battery_low_percent", "allowance_weekday", "digest_hour", "push_min_severity",
+                    "wifi_presence", "wifi_away_minutes", "file_storage"}
 
 
 @router.patch("/family")

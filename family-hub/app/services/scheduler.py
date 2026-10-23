@@ -1,7 +1,9 @@
 """Background loop: recurring chores, allowance, door checks, calendar sync and the daily digest."""
 import asyncio
 import logging
+import sqlite3
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -9,7 +11,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Chore, ChoreInstance, Event, Family, HealthRecord, Homework, Integration, Member, Redemption, Transaction
 from ..timeutil import local_now, utcnow
-from . import chores, google, icloud, locks
+from . import chores, google, icloud, locks, presence
 from .notify import raise_alert
 
 log = logging.getLogger(__name__)
@@ -18,8 +20,12 @@ CALENDAR_SYNC_EVERY = timedelta(minutes=15)
 
 def tick(db: Session, now: datetime | None = None) -> None:
     now = now or utcnow()
+    try:
+        backup(now)
+    except Exception:
+        log.exception("Backup failed")
     for family in db.query(Family).all():
-        for step in (_chores, _allowance, _locks, _calendars, _digest):
+        for step in (_chores, _allowance, _presence, _locks, _calendars, _digest):
             try:
                 step(db, family, now)
             except Exception:
@@ -50,6 +56,13 @@ def _allowance(db: Session, family: Family, now: datetime) -> None:
         db.commit()
         raise_alert(db, family, "finance", f"Allowance paid: ${kid.weekly_allowance_cents / 100:.2f}",
                     member_id=kid.id, audience=["child"])
+
+
+def _presence(db: Session, family: Family, now: datetime) -> None:
+    if (family.settings or {}).get("wifi_presence"):
+        seen = presence.seen_macs()
+        if seen is not None:  # a failed scan must not mark everyone as away
+            presence.update(db, family, seen, now)
 
 
 def _locks(db: Session, family: Family, now: datetime) -> None:
@@ -112,6 +125,29 @@ def build_digest(db: Session, family: Family, today: date) -> str:
     if pending:
         lines.append(f"🎁 {pending} reward request(s) waiting")
     return "\n".join(lines)
+
+
+def backup(now: datetime, keep: int = 14) -> Path | None:
+    """Once a day, copy the SQLite database into FAMILY_HUB_BACKUP_DIR using SQLite's online backup."""
+    url = settings.database_url
+    if not settings.backup_dir or not url.startswith("sqlite:///") or url == "sqlite:///:memory:":
+        return None
+    folder = Path(settings.backup_dir).expanduser()
+    target = folder / f"family_hub-{now:%Y-%m-%d}.db"
+    if target.exists():
+        return None
+    folder.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(url.removeprefix("sqlite:///"))
+    dst = sqlite3.connect(target)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    for old in sorted(folder.glob("family_hub-*.db"))[:-keep]:
+        old.unlink()
+    log.info("Backed up database to %s", target)
+    return target
 
 
 async def run_forever() -> None:
