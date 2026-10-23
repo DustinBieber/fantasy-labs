@@ -23,6 +23,8 @@ class Settings:
     files_dir: str = field(default_factory=lambda: _env("FAMILY_HUB_FILES_DIR", "./files"))
     # Copy the database here once a day (keeps 14). Blank = no backups.
     backup_dir: str = field(default_factory=lambda: _env("FAMILY_HUB_BACKUP_DIR"))
+    # Private working files: iCloud/Google sign-in sessions for location connectors, etc.
+    state_dir: str = field(default_factory=lambda: _env("FAMILY_HUB_STATE_DIR", "./state"))
     session_days: int = field(default_factory=lambda: int(_env("FAMILY_HUB_SESSION_DAYS", "30")))
 
     # Optional: finish Google sign-in at http://localhost:8000 on the hub's own computer instead.

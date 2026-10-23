@@ -117,13 +117,14 @@ const NAV = [
   { id: "health", label: "Health", ico: "🩺" },
   { id: "map", label: "Map", ico: "📍", tab: true },
   { id: "home", label: "Doors", ico: "🔐", parent: true },
+  { id: "connections", label: "Connections", ico: "🔌", parent: true },
   { id: "alerts", label: "Alerts", ico: "🔔" },
   { id: "settings", label: "Settings", ico: "⚙️" },
   { id: "more", label: "More", ico: "☰", tab: true, mobileOnly: true },
 ];
 
 function currentView() {
-  const v = location.hash.replace(/^#/, "").split("?")[0] || "today";
+  const v = location.hash.replace(/^#/, "").split(/[?/]/)[0] || "today";
   const item = NAV.find((n) => n.id === v);
   if (!item || (item.parent && !isParent())) return "today";
   return v;
@@ -158,7 +159,9 @@ async function render() {
     const html = await VIEWS[v]();
     $("#root").innerHTML = shell(html);
     MOUNT[v]?.();
-    window.scrollTo({ top: 0 });
+    const sub = location.hash.split("/")[1];
+    const target = sub && document.getElementById(`conn-${sub.split("?")[0]}`);
+    if (target) target.scrollIntoView(); else window.scrollTo({ top: 0 });
   } catch (err) {
     if (!S.token) { $("#root").innerHTML = authView(); return; }
     $("#root").innerHTML = shell(`<div class="banner critical">${esc(err.message)}</div>`);
@@ -267,6 +270,8 @@ VIEWS.today = async () => {
       <div class="muted">${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</div></div>
       ${!isParent() ? `<span class="chip brand">⭐ ${d.me.points} points</span><span class="chip">${money(d.me.wallet_cents)}</span>` : ""}</div>
     ${crit}${pending}
+    ${isParent() && d.connections && (d.connections.connected < d.connections.total) ? `<a href="#connections" class="banner info row" style="text-decoration:none">
+      <span class="grow">🔌 ${d.connections.connected} of ${d.connections.total} connections set up${d.connections.attention ? ` · ${d.connections.attention} need attention` : ""}</span><strong>Finish →</strong></a>` : ""}
     ${["default", "granted", "needs-install"].includes(pushState()) && !localStore("fh_push_nag") ? `<div class="banner info row"><span class="grow">🔔 Get alerts on this phone for free.</span>
       <a href="#settings">Set up</a><button class="small ghost" data-act="dismissPushNag" aria-label="Dismiss">✕</button></div>` : ""}
     <h2>Today's chores</h2>${choreList(d.chores, "No chores today 🎉")}
@@ -388,7 +393,7 @@ VIEWS.calendar = async () => {
   const integ = isParent() ? await api("GET", "/api/integrations").catch(() => null) : null;
   const byDay = {};
   for (const e of events) (byDay[eventDay(e)] ??= []).push(e);
-  const src = { google: `<span class="chip">Google</span>`, icloud: `<span class="chip">iCloud</span>`, local: "" };
+  const src = { google: `<span class="chip">Google</span>`, icloud: `<span class="chip">iCloud</span>`, ics: `<span class="chip">Linked</span>`, local: "" };
   const days = Object.keys(byDay).sort().map((d) => `<h2>${dayLabel(d)}</h2><div class="list">${byDay[d].map((e) => `<div class="item">
       <div style="width:70px" class="small muted">${eventTime(e)}</div>
       <div class="grow"><div class="title">${esc(e.title)}</div>${e.location ? `<div class="small muted">📍 ${esc(e.location)}</div>` : ""}</div>
@@ -396,8 +401,9 @@ VIEWS.calendar = async () => {
       ${e.pushed.map((p) => `<span class="chip good" title="Copied to ${p}">→ ${p}</span>`).join("")}
       ${isParent() && e.source === "local" ? `<button class="small ghost" data-act="delEvent" data-id="${e.id}" aria-label="Delete">✕</button>` : ""}</div>`).join("")}</div>`).join("");
   const targets = [integ?.google && "google", integ?.icloud && "icloud"].filter(Boolean);
-  return `<div class="top"><h1 class="grow">Calendar</h1>${isParent() && targets.length ? `<button data-act="syncCal">⟳ Sync now</button>` : ""}</div>
-    ${isParent() && integ && !targets.length ? `<div class="banner info">Connect Google Calendar or iCloud in <a href="#settings">Settings</a> to see everyone's calendars here.</div>` : ""}
+  const ics = events.some((e) => e.source === "ics");
+  return `<div class="top"><h1 class="grow">Calendar</h1>${isParent() && (targets.length || ics) ? `<button data-act="syncCal">⟳ Sync now</button>` : ""}</div>
+    ${isParent() && integ && !targets.length && !ics ? `<div class="banner info">Bring in Google, iCloud, school and team calendars on the <a href="#connections">Connections</a> page.</div>` : ""}
     <details class="add card"><summary>+ Add an event</summary><form class="stack" data-form="addEvent"><div class="fields">
       <label>What<input name="title" required placeholder="Soccer practice"></label>
       <label>Starts<input name="start" type="datetime-local" required></label>
@@ -797,6 +803,99 @@ VIEWS.alerts = async () => {
       ${!a.read ? `<button class="small ghost" data-act="read" data-id="${a.id}" aria-label="Mark read">✓</button>` : ""}</div>`).join("") || `<div class="empty">No alerts. All quiet 🌙</div>`}</div>`;
 };
 
+// ---------- connections (every outside service in one checklist)
+
+const STATE_CHIP = {
+  connected: `<span class="chip good">Connected</span>`, attention: `<span class="chip warn">Needs attention</span>`,
+  off: `<span class="chip">Not connected</span>`, unavailable: `<span class="chip">Not available</span>`,
+};
+const AVAIL_CHIP = { mac: `<span class="chip">Needs the Mac</span>`, bridge: `<span class="chip brand">Bridge — no public API</span>` };
+S.connStep = {};
+
+VIEWS.connections = async () => {
+  const [d, fam] = await Promise.all([api("GET", "/api/connectors"), api("GET", "/api/family")]);
+  S._conn = d;
+  const pct = Math.round((100 * d.connected) / d.total);
+  const groups = Object.entries(d.categories).map(([cat, label]) => {
+    const items = d.items.filter((i) => i.category === cat);
+    return items.length ? `<h2>${label}</h2>${items.map((i) => connCard(i, d, fam)).join("")}` : "";
+  }).join("");
+  const flash = new URLSearchParams(location.hash.split("?")[1] || "").get("google");
+  return `${flash ? `<div class="banner ${flash === "connected" ? "info" : "critical"}">Google: ${esc(flash)}</div>` : ""}<div class="top"><h1 class="grow">Connections</h1><span class="chip ${d.connected === d.total ? "good" : "brand"}">${d.connected} of ${d.total} connected</span></div>
+    <div class="bar" style="margin-bottom:8px"><div style="width:${pct}%"></div></div>
+    <p class="small muted">Everything the hub can talk to. “Bridge” items are services with no public API; the hub reaches them another
+      way today, and the slot is ready for a direct connection if one appears.</p>${groups}`;
+};
+
+function fieldInput(f, prefix = "") {
+  const attrs = `name="${prefix}${esc(f.name)}" ${f.required ? "required" : ""} placeholder="${esc(f.placeholder || "")}" autocomplete="off"`;
+  const input = f.kind === "textarea" ? `<textarea ${attrs} rows="4"></textarea>`
+    : `<input type="${f.kind === "password" ? "password" : f.kind === "email" ? "email" : f.kind === "url" ? "url" : "text"}" ${attrs}>`;
+  return `<label>${esc(f.label)}${input}${f.help ? `<span class="small muted" style="font-weight:400">${esc(f.help)}</span>` : ""}</label>`;
+}
+
+function connCard(i, d, fam) {
+  const open = location.hash.split("/")[1] === i.key || S.connStep[i.key] || i.state === "attention";
+  const step = S.connStep[i.key];
+  const connected = i.state === "connected" || (i.state === "attention" && i.connectable && i.last_sync_at);
+  let body = "";
+  if (i.key === "google") body = googleBody(i, d, fam);
+  else if (i.key === "hub_feed") body = feedBody(d);
+  else if (step) {
+    body = `<form class="stack" data-form="connFinish" data-key="${i.key}"><div class="banner info">${esc(step.message)}</div>
+      ${step.fields.map((f) => fieldInput(f)).join("")}<button class="primary">Continue</button></form>`;
+  } else if (i.connectable) {
+    const form = `<form class="stack" data-form="connect" data-key="${i.key}">${i.fields.map((f) => fieldInput(f)).join("")}
+      <button class="primary">${connected ? "Update" : "Connect"}</button></form>`;
+    body = connected ? `<details class="add"><summary>Change settings</summary>${form}</details>` : form;
+  }
+  const mapping = i.subjects?.length ? `<form class="stack" data-form="connMap" data-key="${i.key}"><strong class="small">Who is who</strong>
+    ${i.subjects.map((s) => `<label class="row" style="font-weight:600;color:var(--text)"><span class="grow">${esc(s.name)}${s.has_location ? "" : ` <span class="muted small">(no location)</span>`}</span>
+      <select name="${esc(s.id)}" style="width:auto">${memberOptions(i.mapping[s.id] ?? null, { none: "— not family / ignore —" })}</select></label>`).join("")}
+    <button class="small">Save who is who</button></form>` : "";
+  const actions = [
+    connected && i.connectable ? `<button class="small" data-act="connSync" data-key="${i.key}">⟳ Check now</button>` : "",
+    i.manage && i.key !== "google" && i.key !== "hub_feed" ? `<a class="btn small" href="${esc(i.manage)}">Open →</a>` : "",
+    connected && i.connectable ? `<button class="small danger" data-act="connOff" data-key="${i.key}">Disconnect</button>` : "",
+    i.docs_url ? `<a class="small" href="${esc(i.docs_url)}" target="_blank" rel="noopener">Help ↗</a>` : "",
+  ].filter(Boolean).join(" ");
+  return `<details class="card" id="conn-${i.key}" ${open ? "open" : ""} style="margin-top:10px">
+    <summary class="row" style="cursor:pointer;list-style:none"><strong class="grow">${esc(i.name)}</strong>${AVAIL_CHIP[i.availability] || ""}${STATE_CHIP[i.state] || ""}</summary>
+    <div class="stack" style="margin-top:10px"><div class="small">${esc(i.summary)}</div>
+      ${i.detail ? `<div class="small ${i.state === "attention" ? "" : "muted"}" style="${i.state === "attention" ? "color:var(--warn)" : ""}">${esc(i.detail)}${i.last_sync_at ? ` · checked ${ago(i.last_sync_at)}` : ""}</div>` : ""}
+      ${i.steps?.length && !connected ? `<ol class="small" style="margin:0;padding-left:20px">${i.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : ""}
+      ${body}${mapping}${actions ? `<div class="row">${actions}</div>` : ""}</div></details>`;
+}
+
+function googleBody(i, d, fam) {
+  if (!d.google_configured) {
+    return `<ol class="small" style="margin:0;padding-left:20px">
+      <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console</a> → create a project (free).</li>
+      <li>APIs &amp; Services → Library → enable <strong>Google Calendar API</strong>, <strong>Google Drive API</strong>, <strong>Gmail API</strong>.</li>
+      <li>OAuth consent screen → External → add your email → <strong>Publish app</strong> (status “In production”, no review needed for family use).</li>
+      <li>Credentials → Create OAuth client ID → Web application → Authorized redirect URI:<div class="copy">${esc(d.google_redirect_uri)}</div></li>
+      <li>Put the client ID and secret in <code>~/FamilyHub/family-hub.env</code> and re-run <code>mac/setup.sh</code>. Then come back here.</li></ol>
+      <div class="small muted">Want Google today without this? Add your Google Calendar's secret iCal link under “Calendar links” and use “Gmail alerts (app password)”.</div>`;
+  }
+  if (i.state === "off") return `<button class="primary" data-act="connectGoogle">Connect Google</button>`;
+  return `<label>Calendar ID<input data-act="gcalId" value="${esc((i.options && i.options.calendar_id) || "primary")}"></label>
+    <label>Save attachments to<select data-act="fileStorage"><option value="google">Google Drive</option>
+      <option value="local" ${fam.settings.file_storage === "local" ? "selected" : ""}>The hub's Mac (iCloud Drive folder)</option></select></label>
+    <div class="row"><button class="small" data-act="syncCal">⟳ Sync calendar</button><button class="small danger" data-act="disconnect" data-provider="google">Disconnect</button></div>`;
+}
+
+function feedBody(d) {
+  const webcal = (u) => u.replace(/^https?:\/\//, "webcal://");
+  const rows = [["Whole family", d.calendar_feed], ...S.members.map((m) => [m.name, `${d.calendar_feed}?member=${m.id}`])];
+  return `<div class="small">On an <strong>iPhone</strong>, tap a link below and choose <em>Subscribe</em>. In <strong>Google Calendar</strong> use the Google link,
+    or Other calendars → + → From URL and paste the address.</div>
+    <div class="list">${rows.map(([n, u]) => `<div class="item small"><strong class="grow">${esc(n)}</strong>
+      <a class="btn small" href="${esc(webcal(u))}">📱 iPhone</a>
+      <a class="btn small" href="https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal(u))}" target="_blank" rel="noopener">Google</a></div>`).join("")}</div>
+    <div class="copy">${esc(d.calendar_feed)}</div>
+    <div class="small muted">Includes hub events, homework due dates, appointments, health reminders and birthdays. iPhone refreshes about hourly; Google every few hours.</div>`;
+}
+
 // ---------- "More" (phone tab bar overflow)
 
 VIEWS.more = async () => {
@@ -823,11 +922,9 @@ VIEWS.settings = async () => {
     <label class="inline"><input type="checkbox" data-act="myShare" ${S.me.share_location ? "checked" : ""}> Share my location with my parents</label>
     <button data-act="signOut">Sign out</button></div>`;
   if (!isParent()) return kidOnly;
-  const [fam, channels, integ] = await Promise.all([api("GET", "/api/family"), api("GET", "/api/notify/channels"), api("GET", "/api/integrations")]);
+  const [fam, channels] = await Promise.all([api("GET", "/api/family"), api("GET", "/api/notify/channels")]);
   const flash = new URLSearchParams(location.hash.split("?")[1] || "").get("google");
   const kind = CHANNEL_FORMS[localStore("fh_ch_kind")] ? localStore("fh_ch_kind") : "imessage";
-  const g = integ.google, ic = integ.icloud, ha = integ.homeassistant;
-  const status = (i) => i ? `<span class="chip good">Connected${i.account ? " · " + esc(i.account) : ""}</span>${i.last_error ? `<div class="small" style="color:var(--bad)">${esc(i.last_error)}</div>` : i.last_sync_at ? `<div class="small muted">Synced ${ago(i.last_sync_at)}</div>` : ""}` : `<span class="chip">Not connected</span>`;
   return `<div class="top"><h1 class="grow">Settings</h1></div>
     ${flash ? `<div class="banner ${flash === "connected" ? "info" : "critical"}">Google: ${esc(flash)}</div>` : ""}
     ${pushCard()}
@@ -848,23 +945,8 @@ VIEWS.settings = async () => {
     <div class="card" style="margin-top:10px">Kids sign in on their own phone or tablet with the family code
       <strong class="copy" style="font-size:15px">${esc(fam.join_code)}</strong> and their PIN.</div>
 
-    <h2>Connected accounts</h2><div class="grid two">
-      <div class="card stack"><h3>Google</h3><div class="small muted">Calendar sync, Drive for homework/milestone/health files, Gmail for alert emails.</div>${status(g)}
-        ${g ? `<label>Calendar ID<input data-act="gcalId" value="${esc(g.options.calendar_id || "primary")}"></label>
-          <label>Save attachments to<select data-act="fileStorage"><option value="google">Google Drive</option>
-            <option value="local" ${fam.settings.file_storage === "local" ? "selected" : ""}>The hub's Mac (iCloud Drive folder)</option></select></label>
-          <button class="small danger" data-act="disconnect" data-provider="google">Disconnect</button>`
-          : integ.google_configured ? `<button class="primary" data-act="connectGoogle">Connect Google</button>`
-          : `<div class="small" style="color:var(--warn)">The server needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first (see README).</div>`}</div>
-      <div class="card stack"><h3>iCloud Calendar (iPhone)</h3><div class="small muted">Uses an <a href="https://support.apple.com/en-us/102654" target="_blank" rel="noopener">app-specific password</a>, not your Apple ID password.</div>${status(ic)}
-        ${ic ? `<button class="small danger" data-act="disconnect" data-provider="icloud">Disconnect</button>` : `<form class="stack" data-form="icloud">
-          <label>Apple ID<input name="username" type="email" required></label>
-          <label>App-specific password<input name="password" required placeholder="xxxx-xxxx-xxxx-xxxx"></label>
-          <label>Calendar name (optional)<input name="calendar_name" placeholder="Family"></label><button class="primary">Connect iCloud</button></form>`}</div>
-      <div class="card stack"><h3>Home Assistant</h3><div class="small muted">Lets the hub see and control a smart lock that Home Assistant can reach.</div>${status(ha)}
-        ${ha ? `<button class="small danger" data-act="disconnect" data-provider="homeassistant">Disconnect</button>` : `<form class="stack" data-form="homeassistant">
-          <label>URL<input name="url" required placeholder="https://xxxx.ui.nabu.casa"></label>
-          <label>Long-lived token<input name="token" required></label><button class="primary">Connect</button></form>`}</div></div>
+    <a href="#connections" class="card row" style="margin-top:16px;text-decoration:none;color:inherit"><span style="font-size:24px">🔌</span>
+      <div class="grow"><strong>Connections</strong><div class="small muted">Google, iCloud, Find My, Google Maps, iMessage, email, calendar links, locks — everything in one checklist.</div></div><span>›</span></a>
 
     <h2>Where alerts go</h2><div class="list">${channels.map((c) => `<div class="item"><div class="grow"><div class="title">${esc(c.label)}</div>
       <div class="small muted">${esc(CHANNEL_FORMS[c.kind]?.label || c.kind)} · ${c.min_severity}+${c.kinds.length ? " · " + c.kinds.join(", ") : ""}</div></div>
@@ -915,7 +997,7 @@ const ACT = {
   delEvent: async (d) => { if (confirm("Delete this event?")) await api("DELETE", `/api/events/${d.id}`); },
   syncCal: async () => {
     const r = await api("POST", "/api/events/sync");
-    toast(Object.entries(r).map(([k, v]) => v.error ? `${k}: ${v.error}` : `${k}: ${v.pulled} in, ${v.pushed} out`).join(" · "));
+    toast(Object.entries(r).map(([k, v]) => v.error ? `${k}: ${v.error}` : (v.message ? `${k}: ${v.message}` : `${k}: ${v.pulled} in, ${v.pushed} out`)).join(" · "));
   },
   hwCycle: async (d) => {
     const next = { todo: "in_progress", in_progress: "done", done: "todo" }[d.status];
@@ -977,6 +1059,8 @@ const ACT = {
       <div class="muted">${esc(d.ip)} · ${esc(d.mac)}</div></div>${d.member ? `<span class="chip good">${esc(d.member)}</span>` : ""}</div>`).join("") || `<div class="empty">Nothing found.</div>`}</div>`;
     return "noRender";
   },
+  connSync: async (d) => { const r = await api("POST", `/api/connectors/${d.key}/sync`); toast(r.message || "Up to date"); },
+  connOff: async (d) => { if (confirm("Disconnect this?")) { await api("DELETE", `/api/connectors/${d.key}`); delete S.connStep[d.key]; } else return "noRender"; },
   rotateHooks: async () => {
     if (!confirm("Old webhook URLs will stop working. Update your automations afterwards. Continue?")) return "noRender";
     await api("POST", "/api/family/rotate-hook-token");
@@ -996,7 +1080,20 @@ const CHANGE = {
   myShare: async (el) => { await api("PATCH", `/api/members/${S.me.id}`, { share_location: el.checked }); if (!el.checked) stopSharing(); S.me = null; },
 };
 
+async function connResult(key, r) {
+  if (r.ok) { delete S.connStep[key]; toast(r.message || "Connected ✅"); }
+  else S.connStep[key] = r;
+}
+
 const FORMS = {
+  connect: async (f, form) => connResult(form.dataset.key, await api("POST", `/api/connectors/${form.dataset.key}/connect`, { values: f })),
+  connFinish: async (f, form) => connResult(form.dataset.key, await api("POST", `/api/connectors/${form.dataset.key}/finish`, { values: f })),
+  connMap: async (f, form) => {
+    const map = {};
+    for (const [k, v] of Object.entries(f)) map[k] = intOrNull(v);
+    await api("PUT", `/api/connectors/${form.dataset.key}/map`, { map });
+    toast("Saved — locations update on the next check");
+  },
   login: async (f) => afterAuth(await api("POST", "/api/auth/login", f)),
   signup: async (f) => afterAuth(await api("POST", "/api/auth/signup", f)),
   joinCode: async (f) => {
@@ -1044,8 +1141,6 @@ const FORMS = {
     S.members = await api("GET", "/api/members");
     toast(`${f.name} added`);
   },
-  icloud: async (f) => { await api("POST", "/api/integrations/icloud", f); toast("iCloud connected"); },
-  homeassistant: async (f) => { await api("POST", "/api/integrations/homeassistant", f); toast("Home Assistant connected"); },
   addChannel: async (f) => {
     const config = {};
     for (const [k, v] of Object.entries(f)) if (k.startsWith("cfg_") && v) config[k.slice(4)] = v;

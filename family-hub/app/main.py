@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .db import init_db
-from .routers import auth, calendar, chores, finances, home, hub, members, push, records
+from .routers import auth, calendar, chores, connectors, finances, home, hub, members, push, records
 from .services import scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Family Hub", version="0.1.0", lifespan=lifespan)
-for r in (auth, members, chores, calendar, records, finances, home, hub, push):
+for r in (auth, members, chores, calendar, records, finances, home, hub, push, connectors):
     app.include_router(r.router)
 
 

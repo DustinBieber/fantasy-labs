@@ -11,7 +11,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Chore, ChoreInstance, Event, Family, HealthRecord, Homework, Integration, Member, Redemption, Transaction
 from ..timeutil import local_now, utcnow
-from . import chores, google, icloud, locks, presence
+from . import chores, google, locks, presence
 from .notify import raise_alert
 
 log = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ def tick(db: Session, now: datetime | None = None) -> None:
     except Exception:
         log.exception("Backup failed")
     for family in db.query(Family).all():
-        for step in (_chores, _allowance, _presence, _locks, _calendars, _digest):
+        for step in (_chores, _allowance, _presence, _locks, _calendars, _connectors, _digest):
             try:
                 step(db, family, now)
             except Exception:
@@ -74,16 +74,40 @@ def _locks(db: Session, family: Family, now: datetime) -> None:
 
 
 def _calendars(db: Session, family: Family, now: datetime) -> None:
-    for integ in db.query(Integration).filter(Integration.family_id == family.id,
-                                              Integration.provider.in_(("google", "icloud"))):
+    # Google syncs here; iCloud and every other polling source run through the connector framework below.
+    for integ in db.query(Integration).filter(Integration.family_id == family.id, Integration.provider == "google"):
         if integ.last_sync_at and now - integ.last_sync_at < CALENDAR_SYNC_EVERY:
             continue
         try:
-            (google if integ.provider == "google" else icloud).sync_calendar(db, integ)
+            google.sync_calendar(db, integ)
         except Exception as exc:
             db.rollback()
             integ.last_error, integ.last_sync_at = str(exc)[:500], now
             db.commit()
+
+
+def _connectors(db: Session, family: Family, now: datetime) -> None:
+    """Run each connected connector's poll() on its own schedule; errors show on the Connections page."""
+    from ..connectors import CATALOG, Ctx
+
+    for c in CATALOG:
+        if not c.poll_minutes:
+            continue
+        ctx = Ctx(db, family, c.key)
+        integ = ctx.integration
+        if integ is None or (integ.last_sync_at and now - integ.last_sync_at < timedelta(minutes=c.poll_minutes)):
+            continue
+        try:
+            c.poll(ctx)
+            integ = ctx.integration
+            integ.last_error = ""
+        except Exception as exc:
+            db.rollback()
+            integ = ctx.integration
+            integ.last_error = str(exc)[:500] or exc.__class__.__name__
+            log.warning("Connector %s failed for family %s: %s", c.key, family.id, exc)
+        integ.last_sync_at = now
+        db.commit()
 
 
 def _digest(db: Session, family: Family, now: datetime) -> None:

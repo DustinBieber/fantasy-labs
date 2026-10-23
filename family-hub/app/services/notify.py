@@ -5,6 +5,7 @@ member's phone that should see it (see services/push.py).
 
 Channel kinds and why they exist:
   imessage    - iMessage (or SMS through a paired iPhone) sent by Messages.app on the Mac running the hub.
+  email       - SMTP with an app password (Gmail, iCloud Mail); no Google Cloud project needed.
   ntfy        - free push notifications to the ntfy app on iPhone and Android.
   twilio_sms  - plain SMS, which lands in Google Messages on Android and Messages on iPhone.
                 (Neither Google Messages nor iMessage offers a public sending API.)
@@ -25,7 +26,7 @@ from . import http
 log = logging.getLogger(__name__)
 
 SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
-CHANNEL_KINDS = ("imessage", "ntfy", "twilio_sms", "gmail", "google_chat", "webhook")
+CHANNEL_KINDS = ("imessage", "email", "ntfy", "twilio_sms", "gmail", "google_chat", "webhook")
 
 
 def raise_alert(db: Session, family: Family, kind: str, title: str, body: str = "", *,
@@ -68,6 +69,7 @@ def raise_alert(db: Session, family: Family, kind: str, title: str, body: str = 
 def send(db: Session, family: Family, kind: str, config: dict, alert: Alert) -> None:
     sender = {
         "imessage": _send_imessage,
+        "email": _send_email,
         "ntfy": _send_ntfy,
         "twilio_sms": _send_twilio,
         "gmail": _send_gmail,
@@ -86,6 +88,21 @@ def _send_imessage(db, family, config, alert):
     text = f"{icon}{alert.title}" + (f"\n{alert.body}" if alert.body else "") + f"\n— {family.name} Hub"
     for recipient in config["to"]:
         macos.send_message(recipient, text, config.get("service", "auto"))
+
+
+def _send_email(db, family, config, alert):
+    """Plain SMTP: Gmail or iCloud Mail with an app password, no Google Cloud project needed."""
+    import smtplib
+
+    msg = EmailMessage()
+    msg["From"] = config.get("from") or config["username"]
+    msg["To"] = ", ".join(config["to"])
+    msg["Subject"] = f"[{family.name}] {alert.title}"
+    msg.set_content(alert.body or alert.title)
+    with smtplib.SMTP(config.get("host", "smtp.gmail.com"), int(config.get("port", 587)), timeout=20) as smtp:
+        smtp.starttls()
+        smtp.login(config["username"], config["password"])
+        smtp.send_message(msg)
 
 
 def _send_ntfy(db, family, config, alert):
@@ -141,6 +158,7 @@ def _send_webhook(db, family, config, alert):
 
 REQUIRED_FIELDS = {
     "imessage": ["to"],
+    "email": ["username", "password", "to"],
     "ntfy": ["topic"],
     "twilio_sms": ["account_sid", "auth_token", "from_number", "to_numbers"],
     "gmail": ["to"],

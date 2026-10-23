@@ -111,6 +111,15 @@ def sync_now(me: Member = Depends(require_parent), db: Session = Depends(get_db)
             integ.last_error = str(exc)[:500]
             db.commit()
             results[integ.provider] = {"error": integ.last_error}
+    from ..connectors import BY_KEY, Ctx
+
+    ctx = Ctx(db, me.family, "ics_feeds")
+    if ctx.integration is not None:
+        try:
+            results["calendar links"] = {"message": BY_KEY["ics_feeds"].poll(ctx)}
+        except Exception as exc:
+            db.rollback()
+            results["calendar links"] = {"error": str(exc)[:300]}
     if not results:
-        raise HTTPException(400, "Connect Google or iCloud in Settings to sync calendars")
+        raise HTTPException(400, "Connect a calendar on the Connections page first")
     return results

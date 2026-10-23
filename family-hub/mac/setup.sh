@@ -81,6 +81,10 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "Back up this file somewhere safe — it holds the key that encrypts your connected accounts."
 fi
 
+# Settings added by newer versions (kept out of iCloud/Drive: holds sign-in sessions for Find My etc.)
+grep -q '^FAMILY_HUB_STATE_DIR=' "$ENV_FILE" || set_env FAMILY_HUB_STATE_DIR "$DATA_DIR/state"
+mkdir -p "$DATA_DIR/state" && chmod 700 "$DATA_DIR/state"
+
 # ---------------------------------------------------------------- background service
 write_plist() {
   mkdir -p "$(dirname "$PLIST")"
@@ -171,5 +175,6 @@ Done. Next steps:
     "Automatically log in as…" (needs FileVault off), or log in once after every restart.
   • The first time the hub sends an iMessage, runs a Shortcut, or scans your Wi-Fi, macOS shows a
     permission prompt on this Mac's screen. Click Allow / OK.
+  • Then open Connections (🔌) in the app: it lists every service with its setup steps.
   • Logs: $DATA_DIR/logs/server.log   Backups: $DATA_DIR/backups   Update: re-run this script.
 TXT

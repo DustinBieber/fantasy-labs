@@ -67,7 +67,7 @@ def mark_all_read(me: Member = Depends(current_member), db: Session = Depends(ge
 
 # ---------------------------------------------------------------- notification channels
 
-SECRET_FIELDS = {"token", "auth_token", "webhook_url"}
+SECRET_FIELDS = {"token", "auth_token", "webhook_url", "password"}
 
 
 def channel_out(ch: NotificationChannel) -> dict:
@@ -176,17 +176,17 @@ def google_start(me: Member = Depends(require_parent), db: Session = Depends(get
 @router.get("/integrations/google/callback", include_in_schema=False)
 def google_callback(state: str = "", code: str = "", error: str = "", db: Session = Depends(get_db)):
     if error or not code:
-        return RedirectResponse("/#settings?google=denied")
+        return RedirectResponse("/#connections/google?google=denied")
     try:
         integ = google.finish_auth(db, state, code)
     except Exception:
-        return RedirectResponse("/#settings?google=failed")
+        return RedirectResponse("/#connections/google?google=failed")
     try:
         google.sync_calendar(db, integ)
     except Exception as exc:
         integ.last_error = str(exc)[:500]
         db.commit()
-    return RedirectResponse("/#settings?google=connected")
+    return RedirectResponse("/#connections/google?google=connected")
 
 
 class ICloudIn(BaseModel):
@@ -304,4 +304,14 @@ def dashboard(me: Member = Depends(current_member), db: Session = Depends(get_db
         out["pending_approvals"] = db.query(ChoreInstance).join(Chore).filter(
             Chore.family_id == fam.id, ChoreInstance.status == "submitted").count()
         out["pending_rewards"] = db.query(Redemption).filter_by(family_id=fam.id, status="pending").count()
+        from ..connectors import CATALOG, Ctx
+
+        states = []
+        for c in CATALOG:
+            try:
+                states.append(c.status(Ctx(db, fam, c.key)).state)
+            except Exception:
+                states.append("attention")
+        out["connections"] = {"connected": states.count("connected"), "attention": states.count("attention"),
+                              "total": len(states)}
     return out

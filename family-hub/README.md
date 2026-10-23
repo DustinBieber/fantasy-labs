@@ -15,7 +15,8 @@ their iPhone or Android home screen. **Nothing to buy and no App Store apps.**
 | **Health** | Appointments, medications, allergies, immunizations, growth and vitals. "Next due" dates appear in the daily digest. Kids only see their own records. |
 | **Location** | Live map, places with arrive/leave alerts, "who's home." |
 | **Doors** | Smart-lock status, activity log, lock/unlock. Alerts for a jammed bolt, unlock or open during quiet hours, a door left unlocked or open too long, low battery, and **"nobody's home and the door is unlocked."** |
-| **Alerts** | **Free push notifications** to each phone, **iMessage** from the Mac, Gmail, and a daily summary of tomorrow. |
+| **Alerts** | **Free push notifications** to each phone, **iMessage** and SMS from the Mac, Gmail, and a daily summary of tomorrow. |
+| **Connections** | One checklist of every outside service with live status, setup steps and error reporting. |
 
 ## What's free, and how each connection works
 
@@ -24,16 +25,23 @@ their iPhone or Android home screen. **Nothing to buy and no App Store apps.**
 | Phone notifications (iPhone & Android) | **Web Push** to the home-screen app (iPhone needs iOS 16.4+) | Free | None |
 | iMessage | The Mac's **Messages** app sends them | Free | None |
 | Text messages to Android / Google Messages | The Mac's Messages app sends SMS through an iPhone with *Text Message Forwarding* turned on. Android phones also get Web Push. | Free (normal texting plan) | None |
-| Google Calendar | Two-way sync (OAuth) | Free | None |
+| Google Calendar | **Today:** paste the calendar's secret iCal link (read-only, 2 min). **Full two-way:** Google OAuth (free, ~15 min setup) | Free | None |
 | Google Drive | Attachments saved to a "Family Hub" folder (app can only see files it creates) | Free | None |
-| Gmail | Alert emails sent from your Gmail account (can't read your inbox) | Free | None |
-| Google Chat | ❌ Not possible on personal Gmail: Google only allows Chat webhooks on paid Workspace accounts. Push and iMessage cover the same need. | — | — |
+| Gmail | **Today:** Gmail app password (2 min). Or via Google OAuth. Sends alert emails; can't read your inbox | Free | None |
+| Google Chat | Workspace accounts: Space webhook. Personal Gmail: **bridge**. No API exists, so push/iMessage/email deliver instead; the slot is ready if Google opens it | Free | None |
 | iPhone Calendar | iCloud Calendar sync with an app-specific password | Free | None |
 | iCloud Drive | Attachments can be saved in iCloud Drive on the Mac, so they appear in the Files app on everyone's iPhone | Free | None |
-| Location | ① Home Wi-Fi presence detected by the Mac ② built-in iPhone **Shortcuts** arrive/leave automations ③ live location while the app is open | Free | None (Shortcuts is built in) |
-| Find My / Google location sharing | ❌ No public access for other apps. ①–③ above replace them. | — | — |
+| Location | ① **Apple Find My** (all family iPhones) ② **Google Maps location sharing** (Android) ③ Home Wi-Fi presence ④ iPhone **Shortcuts** arrive/leave ⑤ live location while the app is open | Free | None |
+| School, sports, team calendars | Paste their calendar links (webcal/.ics), optionally tagged to a kid | Free | None |
+| Hub calendar on every phone | One-tap subscribe link per person (events, homework due, appointments, birthdays) | Free | None |
 | Philips smart deadbolt | **Apple Home** (Matter models such as the 4000 series): the Mac runs Shortcuts to lock and unlock, and Home automations report status instantly. Other models: webhook or Home Assistant. | Free | None |
 | HTTPS address for phones | **Tailscale Funnel** on the Mac gives a permanent `https://…ts.net` address | Free | None (only the Mac runs Tailscale) |
+
+**Find My and Google Maps location sharing have no official API.** The hub uses the same unofficial web
+endpoints as Home Assistant's long-running iCloud and Google Maps integrations (pyicloud and locationsharinglib).
+They work today but can break if Apple or Google change their sites. If one breaks, the Connections page shows it,
+and Wi-Fi presence and Shortcuts keep working. Find My needs your real Apple ID password plus a one-time 6-digit code;
+it's stored encrypted on your Mac.
 
 The one piece of extra software is **Tailscale, on the Mac only**. Phones only allow a web app to install,
 send notifications and share location when it's served over `https://`. Tailscale Funnel provides that
@@ -74,6 +82,25 @@ Logs are in `~/FamilyHub/logs/server.log`. Daily database backups go to `~/Famil
 The first time the hub sends an iMessage, runs a Shortcut, scans the Wi-Fi, or saves into iCloud Drive, macOS asks
 whether "python" may do so. Click **OK / Allow**. If you missed one, go to System Settings → Privacy & Security →
 **Automation** (Messages), **Local Network**, or **Files & Folders**, and turn it on for python.
+
+## Connect everything today (Connections 🔌 page)
+
+The **Connections** page lists every service with a live status and its own setup form. Suggested order:
+
+| # | Connection | Time | What you need |
+|---|---|---|---|
+| 1 | Phone notifications | 1 min per phone | Add the app to the Home Screen → Settings → Turn on notifications |
+| 2 | iMessage | 2 min | Messages signed in on the Mac |
+| 3 | Gmail alerts (app password) | 2 min | 2-Step Verification on, then [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) |
+| 4 | Calendar links | 2 min per calendar | Google Calendar → Settings → your calendar → *Secret address in iCal format*; school/team `webcal://` links |
+| 5 | Family Hub calendar on every phone | 1 min per phone | Tap the 📱 iPhone or Google link on the Connections page |
+| 6 | iCloud Calendar (two-way) | 3 min | Apple ID app-specific password |
+| 7 | Apple Find My | 3 min | Apple ID password + the code Apple sends; Family Sharing with Share My Location on |
+| 8 | Google Maps location sharing | 5 min | Each Android phone shares location with you in Google Maps; paste your browser's Google cookies.txt |
+| 9 | Home Wi-Fi presence | 5 min | Each phone's Wi-Fi address (Map tab) |
+| 10 | Google Messages (SMS) | 2 min | Text Message Forwarding from a family iPhone to the Mac |
+| 11 | Philips deadbolt | 10 min | Apple Home (Matter) or the lock webhook / Home Assistant (Doors tab) |
+| 12 | Google two-way (Calendar, Drive, Gmail OAuth) | 15 min | Free Google Cloud OAuth client (steps on the page) |
 
 ## Connecting things
 
@@ -160,13 +187,37 @@ sensor or system. Webhook links contain a secret token. Rotate them in Settings 
 - The hub is reachable from the internet through Tailscale Funnel, protected by the sign-in.
 
 ## For developers
+
+### Adding a connector
+Every outside service is a `Connector` subclass in `app/connectors/` (see `base.py`). Declare `key`, `name`,
+`category`, `summary`, `fields` and `steps`, then implement what applies:
+
+```python
+class MyService(Connector):
+    key, name, category = "my_service", "My Service", "location"
+    fields = [Field("token", "API token", "password", secret=True)]
+    poll_minutes = 10
+
+    def connect(self, ctx, values):        # validate, save, optionally raise NeedsInput for a 2FA step
+        ctx.save(account="me", secret=values)
+        return self.poll(ctx)
+
+    def poll(self, ctx):                    # runs on the scheduler; errors appear on the Connections page
+        return apply_locations(ctx, [{"id": "phone1", "name": "Sam's phone", "lat": 41.9, "lng": -87.6}])
+```
+
+Add it to `CATALOG` in `app/connectors/catalog.py`. The Connections page renders its form, status, sync and
+"who is who" mapping automatically. Services with no API today are listed as `availability = "bridge"` connectors
+that point at the route that works now, so a real implementation can replace them later without UI changes.
+
 ```bash
 cd family-hub && python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt && pytest          # 51 tests, outbound calls mocked
+pip install -r requirements-dev.txt && pytest          # 64 tests, outbound calls mocked
 uvicorn app.main:app --reload                           # http://localhost:8000, API docs at /docs
 ```
 ```
 app/            FastAPI app: models, routers (auth, chores, calendar, records, finances, home, hub, push)
+app/connectors/ connector framework + catalog (Find My, Google location, calendar links, iMessage, Gmail, Chat, locks…)
 app/services/   google, icloud, push, macos (Messages/Shortcuts), presence (Wi-Fi), geo, locks, files, notify, scheduler
 static/         installable web app (vanilla JS, no build step) + service worker
 mac/            setup.sh / uninstall.sh for an always-on Mac
