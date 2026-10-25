@@ -37,7 +37,8 @@ python -m pytest              # tests
 ```
 
 No terminal needed: double-click `run/start-mac.command` (Mac) or `run/start-windows.bat` (Windows).
-For the Mac mini, `run/install-mac-service.sh` keeps it running in the background.
+For the Mac mini + MacBook + phone setup, follow **[DEVICE-SETUP.md](DEVICE-SETUP.md)**:
+`run/install-mac-service.sh --boot` runs it as a service and `run/update-mac.sh` updates it.
 Or with Docker: `docker compose up -d`. **Set `OPSHUB_PASSWORD`** before the app is reachable from
 anywhere but your own machine.
 

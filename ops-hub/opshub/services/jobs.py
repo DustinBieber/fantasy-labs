@@ -1,7 +1,8 @@
 """Named jobs (run on a schedule or on demand) and the background scheduler.
 
 Interval: sync every SYNC_INTERVAL_MINUTES, then publish the calendar and the Sheets report.
-Daily (business timezone): Muse export at MUSE_EXPORT_TIME, digest at DIGEST_TIME.
+Daily (business timezone): Muse export at MUSE_EXPORT_TIME, digest at DIGEST_TIME, database
+backup at BACKUP_TIME.
 Every tick (~20 s): answer Telegram messages.
 """
 from __future__ import annotations
@@ -91,8 +92,15 @@ def telegram_poll(session: Session, s: Settings, env=None) -> dict:
     return chatops.poll_telegram(session, s, env)
 
 
+def backup(session: Session, s: Settings, env=None) -> dict:
+    from .backup import backup as run_backup
+
+    session.commit()  # the copy should include everything written so far
+    return run_backup()
+
+
 JOBS = {"digest": send_digest, "muse_export": muse_export, "calendar": publish_calendar, "sheets_report": export_sheets,
-        "telegram_poll": telegram_poll}
+        "telegram_poll": telegram_poll, "backup": backup}
 
 
 def run_job(session: Session, name: str, s: Settings, env=None) -> dict:
@@ -134,7 +142,7 @@ class Scheduler:
                 for name in ("calendar", "sheets_report"):
                     self._safe(session, name, s, ran)
             local = to_local(now, s.timezone)
-            for name, at in (("muse_export", s.muse_export_time), ("digest", s.digest_time)):
+            for name, at in (("muse_export", s.muse_export_time), ("digest", s.digest_time), ("backup", s.backup_time)):
                 key = f"scheduler:daily:{name}"
                 if at and local.strftime("%H:%M") >= at and kv.get(key, session=session) != local.date().isoformat():
                     self._safe(session, name, s, ran)

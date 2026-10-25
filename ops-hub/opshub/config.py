@@ -75,6 +75,7 @@ class Settings:
     sync_interval_minutes: int = 15
     digest_time: str = "07:00"
     muse_export_time: str = "06:00"
+    backup_time: str = "02:30"
 
     deadline_warn_hours: int = 72
     deadline_urgent_hours: int = 24
@@ -113,6 +114,7 @@ class Settings:
             sync_interval_minutes=i("SYNC_INTERVAL_MINUTES", d.sync_interval_minutes),
             digest_time=e.get("DIGEST_TIME") or d.digest_time,
             muse_export_time=e.get("MUSE_EXPORT_TIME") or d.muse_export_time,
+            backup_time=e.get("BACKUP_TIME") or d.backup_time,
             deadline_warn_hours=i("DEADLINE_WARN_HOURS", d.deadline_warn_hours),
             deadline_urgent_hours=i("DEADLINE_URGENT_HOURS", d.deadline_urgent_hours),
             order_stale_days=i("ORDER_STALE_DAYS", d.order_stale_days),

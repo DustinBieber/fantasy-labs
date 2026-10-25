@@ -10,3 +10,4 @@ handoff/
 *.db-wal
 *.db-shm
 logs/
+backups/

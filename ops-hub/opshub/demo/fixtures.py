@@ -226,7 +226,8 @@ def shopify_orders(now: datetime) -> list[dict]:
                        note="Corporate gifts - include 24 printed note cards (attached to email)"),
         _shopify_order(5007, "#2047", h(70), "ON_HOLD", [("MTE-50", 1, 1)],
                        note="Address change requested by customer - hold until confirmed", customer="Ana Sousa"),
-        _shopify_order(5008, "#2048", h(190), "UNFULFILLED", [("PMK-SYR", 3, 3)], attrs={"Need By": dd(-1)},
+        # Need By two days back, so it reads as overdue in any timezone.
+        _shopify_order(5008, "#2048", h(190), "UNFULFILLED", [("PMK-SYR", 3, 3)], attrs={"Need By": dd(-2)},
                        customer="Rosa Delgado"),
         _shopify_order(5009, "#2049", h(168), "PARTIALLY_FULFILLED", [("CBC-32", 1, 0), ("CHG-65W", 1, 1)],
                        note="Charger backordered, ships separately", customer="Ivan Petrov", updated=h(150)),

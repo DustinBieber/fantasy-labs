@@ -4,7 +4,8 @@
   scheduler                     run only the scheduler (syncs, daily jobs, Telegram replies)
   sync [connector ...]          pull from all (or the named) connectors, then run rules
   rules                         re-run watch rules and send notifications
-  job <name>                    run one job now: digest, muse_export, calendar, sheets_report, telegram_poll
+  job <name>                    run one job now: digest, muse_export, calendar, sheets_report, telegram_poll, backup
+  backup [DIR]                  copy the database now (default ./backups, keeps 14)
   connectors                    show each connector's mode and missing settings
   digest                        print the open-items digest
   google-login                  connect a Google account (Sheets, Drive, Gmail, Calendar)
@@ -40,6 +41,8 @@ def main(argv: list[str] | None = None) -> None:
     p_ls = sub.add_parser("lightspeed-login")
     p_ls.add_argument("--port", type=int, default=8766)
     sub.add_parser("telegram-chats")
+    p_bk = sub.add_parser("backup")
+    p_bk.add_argument("dir", nargs="?")
     p_tpl = sub.add_parser("sheet-template")
     p_tpl.add_argument("dir")
     sub.add_parser("connectors")
@@ -66,6 +69,11 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.cmd == "init-db":
         print(f"Tables ready in {settings.database_url}")
+        return
+    if args.cmd == "backup":
+        from .services.backup import backup
+
+        print(json.dumps(backup(args.dir), indent=2))
         return
     if args.cmd == "google-login":
         google_login(args.port)

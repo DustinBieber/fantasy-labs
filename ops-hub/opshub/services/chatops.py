@@ -49,7 +49,7 @@ def role_for(channel: str, sender: str, env) -> str | None:
 
 
 def handle(session: Session, s: Settings, text: str, role: str, channel: str) -> str | None:
-    t = (text or "").strip()
+    t = re.sub(r"^/(\w+)@\w+", r"/\1", (text or "").strip())  # "/order@JocorOpsBot 2041" in groups
     low = t.lower().lstrip("/")
     now = utcnow()
     if role == "staff":

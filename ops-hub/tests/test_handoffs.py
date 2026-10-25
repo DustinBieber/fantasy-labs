@@ -226,3 +226,51 @@ def test_old_database_gets_new_columns(tmp_path):
     db.create_all()
     cols = {r[1] for r in sqlite3.connect(path).execute("pragma table_info(orders)")}
     assert {"manual_deadline", "external_notes", "shipped_at", "required_by"} <= cols
+
+
+def test_backup_copies_and_prunes(tmp_path, monkeypatch):
+    import sqlite3
+
+    from opshub import db
+    from opshub.config import Settings, set_settings
+    from opshub.services.backup import backup
+
+    path = tmp_path / "live.db"
+    set_settings(Settings(database_url=f"sqlite:///{path}", scheduler=False))
+    db.init_engine(f"sqlite:///{path}")
+    db.create_all()
+    dest = tmp_path / "bk"
+    dest.mkdir()
+    for d in ("2026-01-01", "2026-01-02", "2026-01-03"):
+        (dest / f"opshub-{d}.db").write_text("old")
+    r = backup(str(dest), keep=2)
+    assert sqlite3.connect(r["file"]).execute("select count(*) from sqlite_master").fetchone()[0] > 5
+    assert sorted(p.name for p in dest.iterdir())[-1] == r["file"].split("/")[-1]
+    assert len(list(dest.iterdir())) == 2  # oldest copies pruned, and no -wal/-shm files left beside the copy
+    set_settings(None)
+
+
+def test_phone_install_files_skip_the_password(client_with_password=None):
+    import os
+
+    from fastapi.testclient import TestClient
+
+    from opshub import db
+    from opshub.api import create_app
+    from opshub.config import Settings, set_settings
+
+    set_settings(Settings(database_url="sqlite://", scheduler=False))
+    db.init_engine("sqlite://")
+    os.environ["OPSHUB_PASSWORD"] = "pw"
+    try:
+        with TestClient(create_app()) as c:
+            assert c.get("/static/pwa/manifest.webmanifest").json()["short_name"] == "Ops Hub"
+            assert c.get("/static/pwa/icon-192.png").status_code == 200
+            assert c.get("/static/app.js").status_code == 401
+    finally:
+        del os.environ["OPSHUB_PASSWORD"]
+        set_settings(None)
+
+
+def test_group_style_bot_commands(synced, settings):
+    assert "Order #2041" in chatops.handle(synced, settings, "/order@JocorOpsBot 2041", "staff", "telegram")

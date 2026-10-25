@@ -94,7 +94,9 @@ def create_app() -> FastAPI:
         """When OPSHUB_PASSWORD is set, every page and API call needs HTTP Basic auth."""
         password = os.environ.get("OPSHUB_PASSWORD")
         # Webhooks authenticate with the sender's signature instead.
-        if password and request.url.path != "/healthz" and not request.url.path.startswith("/webhooks/"):
+        # The phone's home-screen install fetches the manifest and icons without credentials.
+        open_paths = ("/webhooks/", "/static/pwa/")
+        if password and request.url.path != "/healthz" and not request.url.path.startswith(open_paths):
             user = os.environ.get("OPSHUB_USER", "ops")
             header = request.headers.get("authorization", "")
             ok = False

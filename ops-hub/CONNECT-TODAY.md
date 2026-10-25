@@ -47,8 +47,9 @@ without duplicates.
    give it `MUSE_HANDOFF.md`.
 8. **Chat (10 min).**
    * Google Chat: create a webhook in the ops space and paste the URL.
-   * Telegram: paste the bot token, add the bot to the ops group, send `/start`, then
-     **Find chats** → **Use for alerts**.
+   * Telegram: in @BotFather send `/setprivacy`, pick the bot, and choose **Disable** so it can read
+     plain messages in the group. Then paste the bot token, add the bot to the ops group, send
+     `/start`, and click **Find chats** → **Use for alerts**.
    * WhatsApp: paste the token, phone number ID, staff numbers and template name.
 9. **AI (2 min).** Paste a Claude, Gemini or ChatGPT key.
 10. **Sync all** on the top bar. The Connectors tab shows each system as *Live*,
