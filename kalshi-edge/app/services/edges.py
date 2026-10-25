@@ -10,7 +10,7 @@ from sqlalchemy import func, insert, select
 from .. import db
 from ..engine.edge import sort_key
 from ..timeutil import now_ts
-from . import gas_service, nfl_service
+from . import gas_service, lines_service, nfl_service
 
 _cache: Dict[str, Any] = {"ts": 0.0, "data": None}
 _lock = threading.Lock()
@@ -33,19 +33,29 @@ def compute(force: bool = False) -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001 - surface any failure on the board instead of crashing it
         nfl, errors = {"games": [], "opportunities": []}, errors + [f"NFL: {e}"]
     try:
+        lines = lines_service.board()
+    except Exception as e:  # noqa: BLE001
+        lines, errors = {"best": [], "counts": {}}, errors + [f"Lines/props: {e}"]
+    try:
         gas = gas_service.board()
     except Exception as e:  # noqa: BLE001
         gas, errors = {"ladders": [], "opportunities": []}, errors + [f"Gas: {e}"]
+    props = [o for o in lines["best"] if o.get("leg_type") == "prop"]
+    game_lines = [o for o in lines["best"] if o.get("leg_type") in ("spread", "total")]
+    n_props = (lines.get("counts") or {}).get("prop", 0)
     groups = [
-        {"key": "props", "title": "Props", "items": [],
-         "note": f"{_props_count()} open prop markets scanned. Prop fair-value models arrive in Phase 2, "
-                 "so no prop is rated yet."},
+        {"key": "props", "title": "Props (NFL)", "items": props,
+         "note": (f"{n_props} open NFL prop strikes; {len(props)} have a sportsbook price at that exact line. "
+                  "Load alt lines + props per game on the Sports tab.") if n_props or props else
+                 f"{_props_count()} open prop markets scanned; none are NFL player ladders with a book price yet."},
         {"key": "games", "title": "Game winners (NFL)", "items": nfl["opportunities"]},
+        {"key": "lines", "title": "Spreads & totals (NFL)", "items": game_lines},
         {"key": "commodities", "title": "Commodities: AAA gas ladder", "items": gas["opportunities"]},
     ]
-    all_items = sorted(nfl["opportunities"] + gas["opportunities"], key=sort_key)
+    all_items = sorted(nfl["opportunities"] + props + game_lines + gas["opportunities"], key=sort_key)
     counts = {t: sum(1 for o in all_items if o["tier"] == t) for t in ("S", "G", "W", "P")}
-    data = {"groups": groups, "counts": counts, "errors": errors, "computed_ts": now_ts(), "nfl": nfl, "gas": gas}
+    data = {"groups": groups, "counts": counts, "errors": errors, "computed_ts": now_ts(), "nfl": nfl, "gas": gas,
+            "lines": lines}
     with _lock:
         _cache.update(ts=time.time(), data=data)
     return data

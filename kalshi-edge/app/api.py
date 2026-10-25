@@ -9,7 +9,8 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from . import db
 from .engine.experts import proof_grade, rolling_grade
-from .services import edges, follow_service, gas_service, jobs, nfl_service, parlay_service, portfolio, scanner
+from .services import (edges, follow_service, gas_service, jobs, lines_service, nfl_service, parlay_service,
+                       portfolio, scanner)
 from .services.categorize import CATEGORIES
 from .settings_store import get_settings, reset_settings, update_settings
 from .sources import odds_api
@@ -62,6 +63,35 @@ def nfl_line(payload: Dict[str, Any] = Body(...)):
         _bad(e)
     edges.compute(force=True)
     return row
+
+
+@router.get("/nfl/lines-board")
+def nfl_lines_board():
+    b = lines_service.board()
+    return {k: b[k] for k in ("best", "games", "counts", "odds_api_enabled", "odds_api_quota")}
+
+
+@router.post("/nfl/deep/{event_ticker}")
+def nfl_deep_pull(event_ticker: str):
+    """Alternate spreads/totals + player props for one game (costs Odds API credits)."""
+    try:
+        r = lines_service.deep_pull(event_ticker)
+    except ValueError as e:
+        _bad(e)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Odds API pull failed: {e}")
+    edges.compute(force=True)
+    return r
+
+
+@router.post("/nfl/manual-line")
+def nfl_manual_line(payload: Dict[str, Any] = Body(...)):
+    try:
+        r = lines_service.add_manual(payload)
+    except (ValueError, KeyError, TypeError) as e:
+        _bad(e)
+    edges.compute(force=True)
+    return r
 
 
 @router.get("/parlays")

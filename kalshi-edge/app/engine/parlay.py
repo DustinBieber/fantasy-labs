@@ -1,4 +1,4 @@
-"""Parlay (Kalshi Combo) math.
+"""Parlay (Kalshi Combo) math. Legs can be moneylines, spreads, totals, or player props; at most one per game.
 
 A combo pays $1 only if every leg wins. For legs from different games, outcomes are independent, so
 fair = product of leg fair probabilities. Kalshi combos are priced by market-maker quotes, which start
@@ -41,13 +41,18 @@ def max_price_for_ev(fair: float, min_ev_pct: float, fee_rate: float, step: floa
     return round(p, 4) if p >= step else None
 
 
+def game_of(leg: Dict[str, Any]) -> str:
+    """One leg per game: moneyline, spread, total, and prop markets of the same game share this key."""
+    return leg.get("game") or leg["event_ticker"]
+
+
 def candidate_legs(legs: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
     """+EV legs only (fair above the ask), best per game, top k by fair / ask."""
     good = [g for g in legs if g.get("fair") and g.get("ask") and 0 < g["ask"] < 1 and g["fair"] > g["ask"]
             and g.get("expert") != "disagree"]
     best_per_game: Dict[str, Dict[str, Any]] = {}
     for g in sorted(good, key=lambda g: g["fair"] / g["ask"], reverse=True):
-        best_per_game.setdefault(g["event_ticker"], g)
+        best_per_game.setdefault(game_of(g), g)
     return sorted(best_per_game.values(), key=lambda g: g["fair"] / g["ask"], reverse=True)[:k]
 
 
@@ -56,7 +61,7 @@ def build(legs: List[Dict[str, Any]], cfg: Dict[str, Any], fee_rate: float) -> L
     out = []
     for n in range(int(cfg["min_legs"]), int(cfg["max_legs"]) + 1):
         for combo in combinations(pool, n):
-            if len({g["event_ticker"] for g in combo}) < n:
+            if len({game_of(g) for g in combo}) < n:
                 continue
             fair = product(g["fair"] for g in combo)
             quote = math.ceil(product(g["ask"] for g in combo) * 10000 - 1e-9) / 10000

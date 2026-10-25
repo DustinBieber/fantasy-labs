@@ -71,7 +71,7 @@ database instead.
 ```
 ./start.sh test
 ```
-There are 88 tests:
+There are 98 tests:
 - fee math (fee types, event overrides, $0.0001 rounding), devig math, Kelly sizing, tier logic;
 - the maker price on Kalshi's price grid, and sharp-book fair prices;
 - gas ladder calibration, implied median, the trap rule, the model, the no-look-ahead history, and the
@@ -80,6 +80,9 @@ There are 88 tests:
   `settlement_value_dollars`, historical candles);
 - an end-to-end test of scan, snapshots, NFL edges, gas with the historical archive, paper fill,
   settlement, CSV export, and stale-data handling, run against a mocked Kalshi API in its current format;
+- spread/total/prop pricing (exact, vig-scaled, model fallback, sharp-book preference, name matching, one-
+  sided TDs left unrated) and an end-to-end run of Kalshi ladders priced from a bulk and per-game Odds API
+  pull, rated, capped by game, and used as mixed parlay legs;
 - bettor grading (proof rule, market-maker filter, full season), Polymarket v1/v2 parsing, parlay math
   (max price, leg rules, payouts on losses and ties), and an end-to-end run that grades three bettors,
   follows the proven one, builds parlays, and logs and settles one.
@@ -90,8 +93,8 @@ There are 88 tests:
 |---|---|
 | Top bar | Bankroll, open exposure, today's P&L, and unrealized P&L. One freshness chip per source; a chip turns red with the last good time when its data is stale or failing. |
 | Top Edges | Props first (rated in Phase 2), then NFL game winners, then the AAA gas ladder. Tier badges. Tap a row to see the reason in plain English, the full math, sources with pull IDs, a 24-hour chart, and the trade form. |
-| Sports | One card per NFL game: Kalshi bid/ask, fair price, 1-hour and 24-hour moves, sparklines, ESPN context, and manual line entry. |
-| Parlays | Multi-game NFL parlay tickets (Kalshi Combos) built only from +EV legs. Each has the legs, fair %, estimated quote, max quote to accept, size, step-by-step setup for Kalshi's combo builder, a quote checker, and a log form. |
+| Sports | Spreads, totals & props: strike counts per game, the rated strikes, a per-game **Load alt lines + props** button, and manual line entry. Below that, one card per NFL game: Kalshi bid/ask, fair price, 1-hour and 24-hour moves, sparklines, and ESPN context. |
+| Parlays | NFL parlay tickets (Kalshi Combos) from +EV moneyline, spread, total, and prop legs, one per game. Each has the legs, fair %, estimated quote, max quote to accept, size, step-by-step setup for Kalshi's combo builder, a quote checker, and a log form. |
 | Follow | Bettors graded from their public Polymarket NFL record. Proven ones (your proof rule) are followed: their open NFL game picks are mapped to Kalshi, compared with our fair price, and graded when the game settles. |
 | Commodities & Econ | The deceleration-trap warning, AAA trends over 1/3/7/14 days, every open gas ladder (Kalshi vs model vs fair, implied median), and median calibration against actual AAA prints. |
 | Markets & History | Every open market by board. Search, sort, a price and volume history chart, and a ★ to watch a ticker (1-minute snapshots). |
@@ -103,14 +106,42 @@ All times are Pacific/Honolulu.
 
 ## Parlays and following proven bettors
 
+### Spreads, totals, and player props
+- **What Kalshi lists:** NFL spreads (`KXNFLSPREAD`, "Denver wins by over 3.5"), totals (`KXNFLTOTAL`,
+  "Over 44.5 points"), and player prop ladders ("A.J. Brown: 60+ receiving yards"). Props cover receiving,
+  rushing, and passing yards, receptions, passing TDs, and touchdowns. Any `KXNFL…` market with a
+  "Player: N+ stat" title is picked up, so new prop series work automatically.
+- **How each strike is priced, best first:**
+  1. **Exact:** a sportsbook's two-sided line at that exact number (main or alternate), vig removed.
+  2. **Scaled (props only):** a one-sided alternate milestone (e.g. "80+ yards +300"), scaled by the same
+     book's vig on its two-sided main line for that player. Labeled on screen.
+  3. **Model (spreads/totals only):** a normal distribution fitted to the main line (NFL margin sd 13.5,
+     total sd 10). It ignores key numbers (3, 7, 10), so a model-priced strike is **capped at Watch**, and
+     parlays skip it by default.
+  4. Anything else stays unrated. One-sided anytime-TD prices are never devigged by guesswork.
+- **Getting the lines:**
+  - Spreads and totals for every game come with the regular Odds API pull.
+  - Alternate lines and player props are pulled per game with **Load alt lines + props** on the Sports
+    tab. It costs about 2 credits plus 2 per prop stat, and only requests stats Kalshi lists for that game.
+  - No key? Enter any two-sided spread, total, or prop line by hand on the Sports tab.
+- **One game, one risk bucket:** every market on the same game (winner, spread, total, props) shares the
+  game's 8% correlated cap. A parlay counts against every game in it.
+- **Odds API credits:** the free tier is 500 credits a month. The default bulk pull (h2h, spreads, totals ×
+  US + EU) is 6 credits, twice a day, about 360 a month, which leaves little room for prop pulls. If you'll
+  play props or spreads every week, the $30/month plan (20,000 credits) lets you poll every 30 minutes and
+  load props for every game. Then set Settings → intervals → Odds API to 30 and staleness → Odds API to 60.
+
 ### Parlays (Kalshi Combos)
 - Kalshi calls parlays **Combos**. A combo pays $1 only if every leg wins. You build it in the Kalshi app,
   and a market maker quotes the price. Requesting and accepting quotes needs a logged-in account, so this
   app never does either. It tells you exactly what to build and what price to accept.
-- **Legs:** only legs where our fair price (sharp or consensus devig) beats the Kalshi ask, one per game.
-  A parlay of fair-priced legs is not +EV, just higher variance.
-- **Multi-game only:** legs from different games are independent, so fair = the product of the leg fair
-  prices. Same-game legs are correlated and are left out until a correlation model exists.
+- **Legs:** moneylines, spreads, totals, and player props, **one per game**. Only legs where our fair price
+  beats the Kalshi ask are used. A parlay of fair-priced legs is not +EV, just higher variance.
+- **Leg pricing rules:** model-priced legs are excluded by default. Vig-scaled prop legs are allowed and
+  flagged. Both are switches in Settings.
+- **Different games only:** legs from different games are independent, so fair = the product of the leg
+  fair prices. Same-game legs (a team's spread with its QB's yards, say) are correlated and stay out until a
+  correlation model exists.
 - **What each ticket shows:**
   - our estimate of the quote, which is the product of the leg asks;
   - the **max quote to accept**: the highest price where net EV after the taker fee is still at least 10%
@@ -255,8 +286,9 @@ app/api.py               JSON API used by the dashboard
 app/config.py            .env loading and every editable default (fees, tiers, caps, intervals)
 app/db.py                SQLAlchemy Core schema (SQLite now, Postgres by changing DATABASE_URL)
 app/sources/             kalshi.py, polymarket.py, espn.py, odds_api.py, aaa.py, http.py (retries, rate limits, pull log)
-app/engine/              fees, devig, kelly, tiers, maker, edge, gas, parlay, follow, experts, teams (pure math, tested)
-app/services/            scanner, nfl_service, parlay_service, follow_service, gas_service, portfolio, edges, jobs
+app/engine/              fees, devig, kelly, tiers, maker, edge, gas, lines, parlay, follow, experts, teams (pure, tested)
+app/services/            scanner, nfl_service, lines_service, parlay_service, follow_service, gas_service, portfolio,
+                         edges, jobs
 static/                  index.html, app.js, app.css (compiled Tailwind), vendor/chart.umd.js
 frontend/                Tailwind source and config (only needed if you change the dashboard's classes)
 scripts/smoke_live.py    live-data proof

@@ -232,7 +232,7 @@ def test_full_phase1_flow(client, fake):
             assert o["tier"] == "P"
 
     edges = client.get("/api/edges?force=true").json()
-    assert [g["key"] for g in edges["groups"]] == ["props", "games", "commodities"]
+    assert [g["key"] for g in edges["groups"]] == ["props", "games", "lines", "commodities"]
     games = edges["groups"][1]["items"]
     outcomes = [o["outcome"] for o in games]
     assert len(outcomes) == len(set(outcomes))  # DEN YES and DAL NO never both listed

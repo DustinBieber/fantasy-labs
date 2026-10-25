@@ -52,7 +52,11 @@ def pull_odds_api() -> Dict[str, Any]:
     if not odds_api.enabled():
         return {"skipped": "no ODDS_API_KEY"}
     s = get_settings()["nfl"]
-    events, pull_id, quota = odds_api.fetch_h2h(SPORT, s.get("odds_api_regions", "us"), s.get("odds_api_bookmakers", ""))
+    events, pull_id, quota = odds_api.fetch_odds(SPORT, s.get("odds_api_regions", "us"), s.get("odds_api_bookmakers", ""),
+                                                 s.get("odds_api_markets", "h2h"))
+    from . import lines_service
+    lines_service.remember_events(events)
+    line_rows = lines_service.store_outcomes(odds_api.parse_outcomes(events), "odds_api", pull_id)
     parsed = odds_api.parse_h2h(events)
     ts = now_ts()
     rows = [dict(r, sport=SPORT, source="odds_api", ts=ts, pull_id=pull_id, note=None) for r in parsed]
@@ -62,7 +66,7 @@ def pull_odds_api() -> Dict[str, Any]:
     _put_cache("cache:odds_api_quota", dict(quota, ts=ts))
     with db.get_engine().begin() as c:
         c.execute(db.data_pulls.update().where(db.data_pulls.c.id == pull_id).values(rows=len(rows)))
-    return {"events": len(events), "book_lines": len(rows), "quota": quota}
+    return {"events": len(events), "book_lines": len(rows), "spread_total_outcomes": line_rows, "quota": quota}
 
 
 def add_manual_line(p: Dict[str, Any]) -> Dict[str, Any]:

@@ -20,11 +20,23 @@ OPEN_STATES = ("resting", "open")
 
 
 def corr_key(series_ticker: Optional[str], event_ticker: Optional[str], gas_series: Optional[set] = None) -> str:
-    """All AAA gas strikes share one underlying, so they share one correlation bucket."""
+    """Correlation bucket for the 8% cap. All AAA gas strikes share one underlying. Every NFL market on the
+    same game (winner, spread, total, player props) shares the game, even though Kalshi lists them as
+    separate events."""
     gs = gas_series if gas_series is not None else scanner.gas_series_set()
     if series_ticker and series_ticker in gs:
         return "AAA-GAS"
+    if (series_ticker or "").startswith("KXNFL") and event_ticker:
+        from ..engine.gas import parse_ticker_date
+        from ..engine.lines import split_matchup
+        teams, d = split_matchup(event_ticker), parse_ticker_date(event_ticker)
+        if teams and d:
+            return f"NFL:{'-'.join(sorted(teams))}|{d.isoformat()}"
     return event_ticker or series_ticker or "?"
+
+
+def _series_of(event_ticker: Optional[str]) -> str:
+    return (event_ticker or "").split("-", 1)[0]
 
 
 def _cost(t: Dict[str, Any]) -> float:
@@ -41,6 +53,11 @@ def exposure_by_key(gas_series: Optional[set] = None) -> Dict[str, float]:
     out: Dict[str, float] = defaultdict(float)
     for t in db.fetch_all(select(db.trades).where(db.trades.c.status.in_(OPEN_STATES))):
         out[corr_key(t["series_ticker"], t["event_ticker"], gs)] += _cost(t)
+        if t.get("combo_legs"):
+            # A parlay rides on every game in it: count its cost against each of those games too.
+            for g in {corr_key(_series_of(leg.get("event_ticker")), leg.get("event_ticker"), gs)
+                      for leg in json.loads(t["combo_legs"])}:
+                out[g] += _cost(t)
     return dict(out)
 
 

@@ -98,6 +98,13 @@ def main() -> int:
               + (f"  ({st['why_not']})" if st.get("why_not") else ""))
     for p in fol["picks"][:8]:
         print(f"  pick: {p['name'][:14]:<14} {p['label']:<40} ${p['size_usd'] or 0:,.0f}  -> {p['verdict']}")
+    from app.services import lines_service
+    lb = lines_service.board()
+    print(f"\nNFL spreads/totals/props on Kalshi: {lb['counts']}; rated (book line at that number): "
+          f"{sum(g['rated'] for g in lb['games'])}")
+    for o in [o for o in lb["best"] if o["side"] == "yes"][:6]:
+        print(f"  [{o['tier']}] {o['subject'][:44]:<44} fair {100 * o['fair']:.1f}% ({o['fair_kind']}) "
+              f"maker {fmt(o['maker_price'])} net EV {o['net_ev_pct']}%")
     par = parlay_service.board()
     print(f"\nParlays: {len(par['tickets'])} tickets from {len(par['pool'])} +EV legs")
     for t in par["tickets"][:5]:
@@ -135,6 +142,14 @@ def main() -> int:
          "AAA blocked the scraper: enter the value by hand on Commodities & Econ (or rely on Kalshi settlements)."),
         ("ESPN odds parsed", isinstance(espn_res, dict) and espn_res.get("with_moneyline", 0) > 0,
          "ESPN returned no moneylines (normal if no upcoming games have odds); use manual lines or ODDS_API_KEY."),
+        ("Kalshi NFL spread/total ladders found (KXNFLSPREAD / KXNFLTOTAL)",
+         lb["counts"].get("spread", 0) + lb["counts"].get("total", 0) > 0,
+         "None found: check Settings -> NFL spread/total series tickers (normal before lines are posted)."),
+        ("Kalshi NFL player props parsed ('Player: N+ stat' titles)", lb["counts"].get("prop", 0) > 0,
+         "No prop titles parsed: Kalshi may word them differently; send me one prop market's title."),
+        ("Spreads/totals priced from The Odds API", "error" not in results.get("odds_api", {}) and
+         results.get("odds_api", {}).get("spread_total_outcomes", 0) > 0 if "skipped" not in results.get("odds_api", {}) else False,
+         "Needs ODDS_API_KEY (or enter lines by hand on the Sports tab)."),
         ("Polymarket leaderboard read (bettor discovery)", "error" not in results.get("follow_discover", {"error": 1})
          and results.get("follow_discover", {}).get("candidates", 0) > 0,
          f"Result: {results.get('follow_discover')}. Polymarket may have changed its Data API; send me this line."),

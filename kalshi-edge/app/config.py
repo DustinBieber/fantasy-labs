@@ -78,7 +78,7 @@ DEFAULT_SETTINGS = {
         "kalshi_scan": 20,
         "kalshi_active": 5,
         "espn_nfl": 60,
-        "odds_api": 240,
+        "odds_api": 780,
         "aaa": 36 * 60,
         "manual_lines": 6 * 60,
         "follow_picks": 60,
@@ -87,18 +87,29 @@ DEFAULT_SETTINGS = {
         "full_scan_minutes": 10,
         "active_snapshot_seconds": 60,
         "espn_minutes": 15,
-        "odds_api_minutes": 240,
+        # 720 = twice a day: 6 credits x 2 x 30 = 360 of the free tier's 500 a month. On a paid plan, use 30.
+        "odds_api_minutes": 720,
         "aaa_minutes": 60,
         "settle_minutes": 2,
         "edge_record_minutes": 5,
         "follow_discover_hours": 24,
         "follow_picks_minutes": 15,
     },
-    "active_series": ["KXNFLGAME"],
+    "active_series": ["KXNFLGAME", "KXNFLSPREAD", "KXNFLTOTAL"],
     "top_volume_active_count": 40,
     "watched_tickers": [],
     "nfl": {
         "series": ["KXNFLGAME"],
+        "spread_series": ["KXNFLSPREAD"],
+        "total_series": ["KXNFLTOTAL"],
+        # Any open market in a series starting with this whose title reads "Player: N+ stat" is a prop.
+        "prop_series_prefix": "KXNFL",
+        # Bulk pull: 1 credit per market per region. h2h,spreads,totals x us,eu = 6 credits a pull.
+        "odds_api_markets": "h2h,spreads,totals",
+        # Per-game pull of alternate lines + player props (only stats Kalshi lists for that game).
+        "deep_pull_regions": "us",
+        "spread_sd": 13.5,
+        "total_sd": 10.0,
         # Priority of fair-probability sources; the first fresh one is used.
         "fair_source_priority": ["odds_api", "manual", "espn"],
         # "us,eu" adds Pinnacle (2 credits per pull instead of 1). With the 240-minute poll that is
@@ -153,6 +164,11 @@ DEFAULT_SETTINGS = {
         # The maximum quote to accept is the price where net EV after fees falls to this.
         "min_net_ev_pct": 10.0,
         "show": 12,
+        "leg_types": ["moneyline", "spread", "total", "prop"],
+        # Props priced from a one-sided alt line scaled by the book's own main-line vig.
+        "allow_scaled_props": True,
+        # Spreads/totals priced by the normal-model fallback (no exact book line): off by default.
+        "allow_model_legs": False,
     },
     "news_feeds": [],
     # Heuristic: series tickers (KX prefix removed) matching this, or prop-like titles, go to the Props board.

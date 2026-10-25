@@ -327,6 +327,7 @@ function viewSports() {
     : 'No ODDS_API_KEY yet: fair prices come from your manual lines first, then ESPN\'s single book (labeled low confidence).';
   const games = d.games.map((g) => gameCard(g, d.opportunities.filter((o) => o.event_ticker === g.event_ticker))).join('');
   return `<div class="text-sm text-ink-300 mb-4">${head}</div>
+    ${linesCard()}
     <div class="grid grid-cols-1 gap-4">${games || card('<div class="text-sm text-ink-400">No open NFL game markets in the database yet. The scanner fills these in on its next run.</div>')}</div>
     <div class="mt-6 grid gap-3 sm:grid-cols-2">${phaseNote('College football and NBA boards, injuries, rest, travel, and closing line value arrive in Phase 2.')}${phaseNote('Props board with best odds arrives in Phase 2.')}</div>`;
 }
@@ -362,7 +363,53 @@ function gameCard(g, opps) {
         <div class="flex items-end"><button class="${btn} w-full" type="submit">Save line</button></div>
       </form></details>`);
 }
+const STATS = [['rec_yds', 'receiving yards'], ['rush_yds', 'rushing yards'], ['pass_yds', 'passing yards'], ['receptions', 'receptions'], ['pass_tds', 'passing TDs'], ['tds', 'anytime TD (Yes/No)']];
+function linesCard() {
+  const L = S.lines;
+  if (!L) return '';
+  const q = L.odds_api_quota;
+  const rows = L.games.map((g) => {
+    const credits = 2 + 2 * (g.prop ? 1 : 0);
+    return `<tr class="border-t border-ink-800">
+      <td class="py-1.5 pr-3">${esc(g.title)}<div class="text-[11px] text-ink-500">${esc(g.date)}</div></td>
+      <td class="pr-3 tabular-nums">${g.spread}</td><td class="pr-3 tabular-nums">${g.total}</td><td class="pr-3 tabular-nums">${g.prop}</td>
+      <td class="pr-3 tabular-nums ${g.rated ? 'text-emerald-300' : 'text-ink-500'}">${g.rated}</td>
+      <td>${L.odds_api_enabled ? `<button class="${btn} text-xs" data-deep="${esc(g.sample_event_ticker)}" ${g.has_event_id ? '' : 'disabled title="Run the Odds API pull first"'}>Load alt lines + props (~${credits}+ credits)</button>` : '<span class="text-xs text-ink-500">needs ODDS_API_KEY, or enter lines by hand below</span>'}</td></tr>`;
+  }).join('');
+  const lineOpps = (L.best || []).filter((o) => o.side === 'yes' && o.tier !== 'P').slice(0, 12).map(edgeRow).join('');
+  const gameOpts = L.games.map((g) => `<option value="${esc(g.sample_event_ticker)}">${esc(g.title)} (${esc(g.date)})</option>`).join('');
+  return card(`${h2('Spreads, totals & props', `Kalshi lists ${L.counts.spread || 0} spread, ${L.counts.total || 0} total, ${L.counts.prop || 0} prop strikes${q && q['x-requests-remaining'] ? ` · ${esc(q['x-requests-remaining'])} Odds API credits left` : ''}`)}
+    <div class="text-sm text-ink-300 mb-3">A strike is rated only when a sportsbook prices that exact line (vig removed). Props can also use a one-sided alt line scaled by the same book's vig (labeled). Spreads and totals can fall back to a labeled normal model, which parlays skip by default.</div>
+    <div class="overflow-x-auto"><table class="text-sm w-full min-w-[720px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Game</th><th class="pr-3">Spread strikes</th><th class="pr-3">Total strikes</th><th class="pr-3">Prop strikes</th><th class="pr-3">Rated</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="py-3 text-ink-500">No open NFL spread, total, or prop markets in the database yet.</td></tr>'}</tbody></table></div>
+    ${lineOpps ? `<div class="mt-3">${lineOpps}</div>` : ''}
+    <details class="mt-3"><summary class="text-sm text-ink-300 cursor-pointer">Enter a spread, total, or prop line by hand</summary>
+      <form id="manual-line" class="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <label class="text-xs text-ink-400 col-span-2">Game<select name="event_ticker" class="${inputCls}">${gameOpts}</select></label>
+        <label class="text-xs text-ink-400">Kind<select name="kind" class="${inputCls}"><option value="spread">Spread (team wins by over X)</option><option value="total">Total (over X)</option><option value="prop">Player prop</option></select></label>
+        <label class="text-xs text-ink-400">Line X (spread/total) or prop Over point<input name="point" type="number" step="0.5" class="${inputCls}" placeholder="3.5"></label>
+        <label class="text-xs text-ink-400">Team (spread)<input name="team" class="${inputCls}" placeholder="DEN"></label>
+        <label class="text-xs text-ink-400">Player (prop)<input name="player" class="${inputCls}" placeholder="A.J. Brown"></label>
+        <label class="text-xs text-ink-400">Stat (prop)<select name="stat" class="${inputCls}">${STATS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+        <label class="text-xs text-ink-400">Book<input name="book" class="${inputCls}" placeholder="screen"></label>
+        <label class="text-xs text-ink-400">Price: team -X / Over / Yes<input name="price_a" type="number" class="${inputCls}" placeholder="-150"></label>
+        <label class="text-xs text-ink-400">Price: opponent +X / Under / No<input name="price_b" type="number" class="${inputCls}" placeholder="+130"></label>
+        <div class="flex items-end col-span-2 sm:col-span-2"><button class="${btn}">Save line</button></div>
+      </form></details>`, 'mb-4');
+}
 function bindSports(root) {
+  bindEdgeRows(root);
+  $$('[data-deep]', root).forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; const label = b.textContent; b.textContent = 'Pulling…';
+    try { const r = await post(`/nfl/deep/${encodeURIComponent(b.dataset.deep)}`); toast(`Loaded ${r.outcomes} lines (${r.credits_used || '?'} credits, ${r.credits_left || '?'} left).`); await loadTab(true); }
+    catch (e) { toast(e.message, true); b.textContent = label; b.disabled = false; }
+  }));
+  $('#manual-line', root)?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target).entries());
+    f.point = parseFloat(f.point); f.price_a = parseInt(f.price_a, 10); f.price_b = parseInt(f.price_b, 10);
+    try { await post('/nfl/manual-line', f); toast('Line saved; strikes re-rated.'); await loadTab(true); } catch (err) { toast(err.message, true); }
+  });
   (S.nfl?.games || []).forEach((g) => g.teams.forEach((t) => sparkline(`sp-${t.ticker}`, t.movement?.spark)));
   $$('.line-form', root).forEach((form) => form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -500,7 +547,7 @@ const netEv = (fair, p, rate) => { const f = rate * p * (1 - p); return 100 * (f
 function viewParlays() {
   const d = S.parlays;
   if (!d) return loading();
-  const pool = (d.pool || []).map((g) => `<tr class="border-t border-ink-800"><td class="py-1.5 pr-3">${esc(g.label)}</td>
+  const pool = (d.pool || []).map((g) => `<tr class="border-t border-ink-800"><td class="py-1.5 pr-3">${esc(g.label)}<span class="ml-2 text-[10px] uppercase tracking-wider text-ink-500">${esc(g.leg_type || '')}${g.fair_kind && g.fair_kind !== 'exact' ? ' · ' + esc(g.fair_kind) : ''}</span></td>
       <td class="pr-3 text-xs text-ink-400">${esc(g.game || '')}</td><td class="pr-3 tabular-nums text-orange-300">${pct(g.fair)}</td>
       <td class="pr-3 tabular-nums">${cents(g.ask)}</td><td class="pr-3 tabular-nums text-emerald-400">${signed(g.leg_edge_pts, 1, ' pts')}</td>
       <td class="text-xs ${g.expert === 'agree' ? 'text-emerald-300' : 'text-ink-500'}">${g.expert === 'agree' ? 'proven bettor agrees' : '—'}</td></tr>`).join('');
@@ -510,12 +557,12 @@ function viewParlays() {
       <td class="pr-3">${esc(c.title)}</td><td class="pr-3 tabular-nums">${c.contracts} @ ${cents(c.limit_price)}</td>
       <td class="tabular-nums ${pnlClass(c.realized_pnl)}">${c.realized_pnl != null ? money(c.realized_pnl) : '—'}</td></tr>`).join('');
   return `<div class="grid grid-cols-1 gap-4">
-    ${card(`${h2('NFL parlays (Kalshi Combos)', `${d.legs_considered} game-winner legs priced · ${(d.pool || []).length} are +EV on their own`)}
+    ${card(`${h2('NFL parlays (Kalshi Combos)', `${d.legs_considered} legs priced (${Object.entries(d.legs_by_type || {}).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}) · ${(d.pool || []).length} are +EV on their own`)}
       <div class="text-sm text-ink-300 space-y-1">
-        <p>Every ticket uses only legs where our fair price beats the Kalshi ask. A parlay of fair-priced legs isn't +EV, just higher variance. ${esc(d.note)}</p>
+        <p>Legs can be moneylines, spreads, totals, or player props, one per game. Every ticket uses only legs where our fair price beats the Kalshi ask. A parlay of fair-priced legs isn't +EV, just higher variance. ${esc(d.note)}</p>
         <p>Kalshi prices each combo by market-maker quote after you build it in the app. Each ticket gives the legs, our fair price, our estimate of the quote, and the <b>highest quote worth accepting</b> (net EV ≥ ${d.min_net_ev_pct}% after fees). This app never places bets.</p>
       </div>`)}
-    <div>${tickets || card(`<div class="text-sm text-ink-400">${(d.pool || []).length < 2 ? 'Fewer than two +EV legs right now, so no parlay is worth building. Legs need a fair price (Odds API key, a manual line, or ESPN) and a Kalshi ask below it.' : 'No ticket clears the rules right now.'}</div>`)}</div>
+    <div>${tickets || card(`<div class="text-sm text-ink-400">${(d.pool || []).length < 2 ? 'Fewer than two +EV legs (from different games) right now, so no parlay is worth building. Legs need a fair price (Odds API key, a manual line, or ESPN for moneylines) and a Kalshi ask below it. Load alt lines + props on the Sports tab.' : 'No ticket clears the rules right now.'}</div>`)}</div>
     ${card(`${h2('Leg pool', 'best +EV leg per game, ranked by fair ÷ ask')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[620px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Leg</th><th class="pr-3">Game</th><th class="pr-3">Fair</th><th class="pr-3">Kalshi ask</th><th class="pr-3">Leg edge</th><th>Followed bettors</th></tr></thead><tbody>${pool || '<tr><td colspan="6" class="py-3 text-ink-500">No +EV legs right now.</td></tr>'}</tbody></table></div>`)}
     ${combos ? card(`${h2('Your parlays')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[640px]"><tbody>${combos}</tbody></table></div>`) : ''}
   </div>`;
@@ -530,7 +577,7 @@ function parlayRow(t) {
     <button class="w-full text-left px-3 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2" data-toggle="${esc(k)}">
       ${tierBadge(t.tier)}
       <div class="min-w-0 grow basis-56"><div class="font-medium">${t.n_legs}-leg: ${title}</div>
-        <div class="text-xs text-ink-400">pays ${esc(t.pays || '—')} · ${t.expert === 'agree' ? '<span class="text-emerald-300">proven bettors on every leg</span>' : 'not every leg has proven agreement'}</div></div>
+        <div class="text-xs text-ink-400">pays ${esc(t.pays || '—')} · ${[...new Set(t.legs.map((g) => g.leg_type))].join(' + ')} · ${t.expert === 'agree' ? '<span class="text-emerald-300">proven bettors on every leg</span>' : 'not every leg has proven agreement'}${t.scaled_legs ? ' · <span class="text-amber-300">includes a vig-scaled prop leg</span>' : ''}</div></div>
       <div class="flex flex-wrap gap-x-3 gap-y-1">
         ${metric('Fair', pct(t.fair))}${metric('Est. quote', cents(t.est_quote))}
         ${metric('Max price', t.max_price != null ? cents(t.max_price) : 'none', 'text-amber-300 font-semibold')}
@@ -775,7 +822,7 @@ const SETTING_FIELDS = [
   ['Tier gates', [['tiers.s_min_edge_pts', 'S: edge above (pts)'], ['tiers.s_min_net_ev_pct', 'S: net EV above (%)'], ['tiers.g_min_edge_pts', 'G: edge at least (pts)'], ['tiers.g_min_net_ev_pct', 'G: net EV at least (%)'], ['tiers.g_size_multiplier', 'G size multiplier'], ['tiers.w_min_edge_pts', 'Watch: edge at least (pts)']]],
   ['Kalshi fees', [['fees.taker_rate', 'Taker rate'], ['fees.maker_rate', 'Maker rate when a series fee type is unknown'], ['fees.rounding_precision', 'Fee rounding ($0.0001 direct member, 0.01 non-direct)'], ['fees.index_taker_rate', 'Index market taker rate'], ['fees.assume_maker_fee_when_unknown', 'Assume maker fee when series fee type unknown (true/false)']]],
   ['Gas model', [['gas.model_weight', 'Model weight vs Kalshi ladder probability (0-1)'], ['gas.drift_weight', 'Drift weight on last 3 daily changes'], ['gas.min_history_days', 'Minimum AAA daily changes before rating'], ['gas.sigma_floor', 'Daily sigma floor ($)'], ['gas.calibration_horizon_hours', 'Calibration: hours before close'], ['gas.min_graded_days', 'Graded days the model needs before rating above Watch']]],
-  ['Following and parlays', [['follow.min_proof_picks', 'Proof rule: minimum graded NFL picks'], ['follow.full_season_weeks', 'Proof rule: weeks that count as a full season'], ['follow.min_position_usd', 'Ignore followed positions smaller than ($)'], ['follow.max_hedge_share', 'Market-maker filter: max share of games with both sides'], ['follow.candidates_per_window', 'Leaderboard wallets to grade per window'], ['parlays.min_net_ev_pct', 'Parlay max price: net EV at least (%)'], ['parlays.max_legs', 'Parlay max legs'], ['parlays.candidate_legs', 'Parlay leg pool size']]],
+  ['Following and parlays', [['follow.min_proof_picks', 'Proof rule: minimum graded NFL picks'], ['follow.full_season_weeks', 'Proof rule: weeks that count as a full season'], ['follow.min_position_usd', 'Ignore followed positions smaller than ($)'], ['follow.max_hedge_share', 'Market-maker filter: max share of games with both sides'], ['follow.candidates_per_window', 'Leaderboard wallets to grade per window'], ['parlays.min_net_ev_pct', 'Parlay max price: net EV at least (%)'], ['parlays.allow_scaled_props', 'Parlays may use vig-scaled prop legs (true/false)'], ['parlays.allow_model_legs', 'Parlays may use model-priced spread/total legs (true/false)'], ['nfl.spread_sd', 'Spread model: NFL margin sd (points)'], ['nfl.total_sd', 'Total model: total points sd'], ['parlays.max_legs', 'Parlay max legs'], ['parlays.candidate_legs', 'Parlay leg pool size']]],
   ['Staleness (minutes)', [['staleness_minutes.kalshi_scan', 'Kalshi price'], ['staleness_minutes.espn_nfl', 'ESPN line'], ['staleness_minutes.odds_api', 'Odds API lines'], ['staleness_minutes.manual_lines', 'Manual lines'], ['staleness_minutes.aaa', 'AAA']]],
 ];
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -879,7 +926,7 @@ function bindAudit(root) {
 /* ---------- loading / routing ---------- */
 const loading = () => '<div class="text-ink-400 text-sm py-10 text-center">Loading…</div>';
 const VIEWS = {
-  edges: [viewEdges, bindEdgeRows], sports: [viewSports, (r) => { bindEdgeRows(r); bindSports(r); }],
+  edges: [viewEdges, bindEdgeRows], sports: [viewSports, bindSports],
   parlays: [viewParlays, bindParlays], follow: [viewFollow, bindFollow],
   econ: [viewEcon, (r) => { bindEdgeRows(r); bindEcon(r); }], news: [viewNews, () => {}], flow: [viewFlow, () => {}],
   markets: [viewMarkets, bindMarkets], trades: [viewTrades, bindTrades], settings: [viewSettings, bindSettings], audit: [viewAudit, bindAudit],
@@ -906,7 +953,7 @@ async function loadTab(force = false) {
     if (!S.settings) S.settings = await api('/settings');
     const t = S.tab;
     if (t === 'edges') S.edges = await api('/edges' + (force ? '?force=true' : ''));
-    if (t === 'sports') S.nfl = await api('/nfl');
+    if (t === 'sports') { S.nfl = await api('/nfl'); S.lines = await api('/nfl/lines-board'); }
     if (t === 'econ') S.gas = await api('/gas');
     if (t === 'parlays') S.parlays = await api('/parlays');
     if (t === 'follow') S.follow = await api('/follow');

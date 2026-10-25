@@ -135,6 +135,26 @@ odds_lines = Table(
 )
 Index("ix_odds_game", odds_lines.c.sport, odds_lines.c.home_team, odds_lines.c.away_team, odds_lines.c.ts)
 
+book_outcomes = Table(
+    "book_outcomes", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("sport", String(20), nullable=False),
+    Column("source", String(20), nullable=False),  # odds_api | manual
+    Column("book", String(60), nullable=False),
+    Column("home_team", String(8), nullable=False),
+    Column("away_team", String(8), nullable=False),
+    Column("commence_ts", BigInteger),
+    Column("event_id", String(80)),
+    Column("market_key", String(60), nullable=False),  # spreads, totals, alternate_*, player_* ...
+    Column("outcome_name", String(120), nullable=False),  # team name, Over, Under, Yes, No
+    Column("description", String(120)),  # player name for props
+    Column("point", Float),
+    Column("price", Integer, nullable=False),  # American odds
+    Column("ts", BigInteger, nullable=False, index=True),
+    Column("pull_id", Integer),
+)
+Index("ix_book_game", book_outcomes.c.sport, book_outcomes.c.home_team, book_outcomes.c.away_team, book_outcomes.c.ts)
+
 aaa_prices = Table(
     "aaa_prices", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
