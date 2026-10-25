@@ -7,6 +7,8 @@ reaches them through one of these providers:
                   straight into Apple Home; needs a HomePod/Apple TV as home hub). The Mac runs Shortcuts
                   named "Lock <name>", "Unlock <name>" and optionally "Status <name>". For instant
                   status, an Apple Home automation ("When <lock> unlocks") opens the lock webhook URL.
+  smartthings   - Samsung SmartThings (the natural home for Matter locks on Galaxy phones): official API,
+                  status polled every minute, lock/unlock supported.
   homeassistant - Home Assistant exposes the lock as `lock.<name>`. Matter models (e.g. the Philips
                   4000 series, Matter over Thread) pair with HA's Matter integration; Wi-Fi models need a
                   community integration. The hub polls its state and can lock/unlock it.
@@ -147,6 +149,10 @@ def command(db: Session, family: Family, lock: Lock, action: str, actor: Member)
         if state == "jammed":
             record_event(db, family, lock, "jammed", actor=actor.name, source="apple_home")
             return
+    if lock.provider == "smartthings":
+        from . import smartthings
+
+        smartthings.command(db, family, lock, action)
     if lock.provider == "homeassistant":
         ha = _ha(db, family.id)
         with http.client() as c:
@@ -180,6 +186,17 @@ def poll(db: Session, family: Family) -> None:
                 state = parse_state(macos.run_shortcut(name))
                 if state:
                     record_event(db, family, lock, state, source="apple_home")
+    for lock in db.query(Lock).filter_by(family_id=family.id, provider="smartthings").all():
+        from . import smartthings
+
+        st = smartthings.read_state(db, family, lock)
+        if st["state"]:
+            record_event(db, family, lock, st["state"], source="smartthings", battery=st["battery"])
+        elif st["battery"] is not None:
+            lock.battery = st["battery"]
+            db.commit()
+        if st["door"]:
+            record_event(db, family, lock, f"door_{st['door']}", source="smartthings")
     locks = db.query(Lock).filter_by(family_id=family.id, provider="homeassistant").all()
     if not locks:
         return

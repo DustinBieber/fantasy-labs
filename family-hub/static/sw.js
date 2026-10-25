@@ -1,5 +1,5 @@
 // Caches the app shell so the hub opens instantly (and offline); API calls always go to the network.
-const CACHE = "family-hub-v2";
+const CACHE = "family-hub-v3";
 const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -34,13 +34,20 @@ self.addEventListener("push", (e) => {
     icon: "/icon-192.png",
     badge: "/icon-192.png",
     tag: data.id ? `alert-${data.id}` : undefined,
-    requireInteraction: data.severity === "critical",
-    data: { url: data.kind === "door" ? "/#home" : "/#alerts" },
+    requireInteraction: data.severity === "critical" || !!data.taken_url,
+    // Android shows these buttons on the notification; iPhone opens the app instead.
+    actions: data.taken_url ? [{ action: "taken", title: "Taken ✓" }] : [],
+    data: { url: data.url || (data.kind === "door" ? "/#home" : "/#alerts"), taken_url: data.taken_url },
   }));
 });
 
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
+  if (e.action === "taken" && e.notification.data?.taken_url) {
+    e.waitUntil(fetch(e.notification.data.taken_url, { method: "POST" }).then((r) =>
+      self.registration.showNotification(r.ok ? "Marked as taken ✓" : "Couldn't mark it — open the app", { icon: "/icon-192.png" })));
+    return;
+  }
   const url = e.notification.data?.url || "/#alerts";
   e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
     for (const w of wins) {

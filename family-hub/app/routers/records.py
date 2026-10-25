@@ -1,17 +1,20 @@
 """Homework, milestones and health records, plus Google Drive attachments for all three."""
 import datetime as dt
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ..crypto import verify_signature
 from ..db import get_db
-from ..models import HealthRecord, Homework, Integration, Member, Milestone
+from ..models import HealthRecord, Homework, Integration, MedDose, Member, Milestone
 from ..security import current_member, ensure_self_or_parent, get_owned, require_parent
-from ..services import files, google
+from ..services import files, google, meds
 from ..services.chores import award
 from ..services.notify import raise_alert
+from ..timeutil import to_utc_naive
 
 router = APIRouter(prefix="/api", tags=["homework, milestones, health"])
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -165,7 +168,9 @@ HEALTH_KINDS = "^(appointment|medication|vital|allergy|immunization|note)$"
 def health_out(r: HealthRecord) -> dict:
     return {"id": r.id, "member_id": r.member_id, "kind": r.kind, "title": r.title,
             "date": r.date.isoformat() if r.date else None, "value": r.value, "unit": r.unit, "notes": r.notes,
-            "next_due": r.next_due.isoformat() if r.next_due else None, "attachments": r.attachments or []}
+            "next_due": r.next_due.isoformat() if r.next_due else None, "attachments": r.attachments or [],
+            "reminder_times": r.reminder_times or [], "reminder_days": r.reminder_days or [],
+            "reminder_until": r.reminder_until.isoformat() if r.reminder_until else None}
 
 
 class HealthIn(BaseModel):
@@ -177,6 +182,9 @@ class HealthIn(BaseModel):
     unit: str = Field(default="", max_length=20)
     notes: str = ""
     next_due: dt.date | None = None
+    reminder_times: list[str] | None = None
+    reminder_days: list[int] | None = None
+    reminder_until: dt.date | None = None
 
 
 class HealthPatch(BaseModel):
@@ -187,6 +195,9 @@ class HealthPatch(BaseModel):
     unit: str | None = Field(default=None, max_length=20)
     notes: str | None = None
     next_due: dt.date | None = None
+    reminder_times: list[str] | None = None
+    reminder_days: list[int] | None = None
+    reminder_until: dt.date | None = None
 
 
 @router.get("/health")
@@ -202,10 +213,21 @@ def list_health(member_id: int | None = None, kind: str | None = None,
     return [health_out(r) for r in q.order_by(HealthRecord.date.desc()).limit(1000)]
 
 
+def _check_reminders(data: dict) -> dict:
+    try:
+        if data.get("reminder_times") is not None:
+            data["reminder_times"] = meds.parse_times(data["reminder_times"])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if any(d < 0 or d > 6 for d in data.get("reminder_days") or []):
+        raise HTTPException(422, "reminder_days are 0 (Mon) to 6 (Sun)")
+    return data
+
+
 @router.post("/health")
 def create_health(body: HealthIn, me: Member = Depends(require_parent), db: Session = Depends(get_db)):
     get_owned(db, Member, body.member_id, me.family_id)
-    r = HealthRecord(family_id=me.family_id, attachments=[], **body.model_dump())
+    r = HealthRecord(family_id=me.family_id, attachments=[], **_check_reminders(body.model_dump()))
     db.add(r)
     db.commit()
     return health_out(r)
@@ -214,7 +236,7 @@ def create_health(body: HealthIn, me: Member = Depends(require_parent), db: Sess
 @router.patch("/health/{rec_id}")
 def update_health(rec_id: int, body: HealthPatch, me: Member = Depends(require_parent), db: Session = Depends(get_db)):
     r = get_owned(db, HealthRecord, rec_id, me.family_id)
-    for k, v in body.model_dump(exclude_unset=True).items():
+    for k, v in _check_reminders(body.model_dump(exclude_unset=True)).items():
         setattr(r, k, v)
     db.commit()
     return health_out(r)
@@ -264,3 +286,38 @@ def get_file(rel: str, sig: str = ""):
     if path is None:
         raise HTTPException(404, "File not found")
     return FileResponse(path, filename=path.name.split("-", 1)[-1], content_disposition_type="inline")
+
+
+# ---------------------------------------------------------------- medication reminders
+
+@router.get("/meds/today")
+def meds_today(me: Member = Depends(current_member), db: Session = Depends(get_db)):
+    people = me.family.members if me.role == "parent" else [me]
+    return meds.today_schedule(db, me.family, people)
+
+
+class DoseIn(BaseModel):
+    slot: datetime
+    status: str = Field(default="taken", pattern="^(taken|skipped)$")
+
+
+@router.post("/meds/{rec_id}/dose")
+def mark_dose(rec_id: int, body: DoseIn, me: Member = Depends(current_member), db: Session = Depends(get_db)):
+    rec = get_owned(db, HealthRecord, rec_id, me.family_id)
+    ensure_self_or_parent(me, rec.member_id)
+    dose = meds.mark(db, me.family, rec, to_utc_naive(body.slot), body.status, me)
+    return {"status": dose.status}
+
+
+@router.post("/meds/doses/{dose_id}/taken-link", include_in_schema=False)
+def taken_from_notification(dose_id: int, sig: str = "", db: Session = Depends(get_db)):
+    """The "Taken ✓" button on an Android notification (signed link, no sign-in needed)."""
+    if not verify_signature(f"dose:{dose_id}", sig):
+        raise HTTPException(404, "Not found")
+    dose = db.get(MedDose, dose_id)
+    if dose is None:
+        raise HTTPException(404, "Not found")
+    rec = dose.record
+    family = db.get(Member, rec.member_id).family
+    meds.mark(db, family, rec, dose.scheduled_for, "taken", db.get(Member, rec.member_id))
+    return {"status": "taken"}

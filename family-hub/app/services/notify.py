@@ -29,16 +29,28 @@ SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 CHANNEL_KINDS = ("imessage", "email", "ntfy", "twilio_sms", "gmail", "google_chat", "webhook")
 
 
+def visible_to(alert: Alert, member) -> bool:
+    """Who sees an alert. audience: [] everyone · ["parent"] / ["child"] by role · ["member"] only alert.member_id.
+
+    Kids never see another kid's personal notices.
+    """
+    if alert.audience == ["member"]:
+        return alert.member_id == member.id
+    if alert.audience and member.role not in alert.audience:
+        return False
+    return member.role == "parent" or alert.member_id in (None, member.id)
+
+
 def raise_alert(db: Session, family: Family, kind: str, title: str, body: str = "", *,
                 severity: str = "info", member_id: int | None = None,
-                audience: list[str] | None = None) -> Alert:
+                audience: list[str] | None = None, extra: dict | None = None) -> Alert:
     alert = Alert(family_id=family.id, kind=kind, severity=severity, title=title, body=body,
-                  member_id=member_id, audience=audience or [], read_by=[], delivery={})
+                  member_id=member_id, audience=audience or [], read_by=[], delivery={}, extra=extra)
     db.add(alert)
     db.flush()
     channels = db.query(NotificationChannel).filter_by(family_id=family.id, enabled=True).all()
-    if alert.audience == ["child"]:
-        channels = []  # kid-only notices (e.g. "chore approved") stay in the app
+    if alert.audience in (["child"], ["member"]):
+        channels = []  # personal notices (chore approved, take your medicine) go to that person only
     delivery = {}
     for ch in channels:
         if SEVERITY_RANK[severity] < SEVERITY_RANK.get(ch.min_severity, 1):

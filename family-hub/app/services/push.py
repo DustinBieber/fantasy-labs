@@ -37,15 +37,10 @@ def vapid_keys(db: Session) -> dict:
 
 
 def recipients(db: Session, family: Family, alert: Alert) -> list[Member]:
-    """Same visibility rules as the in-app feed: audience roles, and kids only get their own notices."""
-    out = []
-    for m in db.query(Member).filter_by(family_id=family.id):
-        if alert.audience and m.role not in alert.audience:
-            continue
-        if m.role != "parent" and alert.member_id not in (None, m.id):
-            continue
-        out.append(m)
-    return out
+    """Same visibility rules as the in-app feed."""
+    from .notify import visible_to
+
+    return [m for m in db.query(Member).filter_by(family_id=family.id) if visible_to(alert, m)]
 
 
 def deliver(subscription: dict, payload: str, private_key: str, claims: dict) -> int:
@@ -77,7 +72,7 @@ def _push(db: Session, family: Family, alert: Alert, members: list[Member]) -> i
     parent = db.query(Member).filter_by(family_id=family.id, role="parent").first()
     claims = {"sub": f"mailto:{parent.email}" if parent and parent.email else "mailto:family-hub@example.com"}
     payload = json.dumps({"title": alert.title, "body": alert.body, "kind": alert.kind,
-                          "severity": alert.severity, "id": alert.id})
+                          "severity": alert.severity, "id": alert.id, **(alert.extra or {})})
     sent = 0
     for sub in subs:
         status = deliver({"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},

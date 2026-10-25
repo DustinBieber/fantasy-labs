@@ -53,17 +53,26 @@ def award(db: Session, member: Member, amount: int, reason: str) -> None:
         db.add(PointsEntry(family_id=member.family_id, member_id=member.id, amount=amount, reason=reason[:200]))
 
 
-def complete(db: Session, family: Family, inst: ChoreInstance, me: Member) -> ChoreInstance:
-    chore = inst.chore
-    if me.role != "parent" and chore.assignee_id not in (None, me.id):
+def check_can_complete(inst: ChoreInstance, me: Member) -> None:
+    if me.role != "parent" and inst.chore.assignee_id not in (None, me.id):
         raise HTTPException(403, "This chore is assigned to someone else")
     if inst.status in ("submitted", "approved"):
         raise HTTPException(409, "Already done")
+
+
+def complete(db: Session, family: Family, inst: ChoreInstance, me: Member, photo: dict | None = None) -> ChoreInstance:
+    chore = inst.chore
+    check_can_complete(inst, me)
+    if chore.requires_photo and me.role != "parent" and not photo:
+        raise HTTPException(422, "Take a photo to finish this chore 📷")
     inst.completed_by_id, inst.completed_at = me.id, utcnow()
+    if photo:
+        inst.photo = photo
     if chore.requires_approval and me.role != "parent":
         inst.status = "submitted"
         db.commit()
-        raise_alert(db, family, "chore", f"{me.name} finished “{chore.title}”", "Waiting for your approval.",
+        raise_alert(db, family, "chore", f"{me.name} finished “{chore.title}”",
+                    "📷 Photo attached. Waiting for your approval." if photo else "Waiting for your approval.",
                     member_id=me.id, audience=["parent"])
     else:
         _approve(db, inst, me, me)

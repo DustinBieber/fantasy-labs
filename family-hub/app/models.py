@@ -70,6 +70,8 @@ class Chore(Base):
     weekdays: Mapped[list] = mapped_column(JSON, default=list)
     start_date: Mapped[dt.date] = mapped_column(Date)
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Kid must take a photo to finish it (shown to the parent who approves).
+    requires_photo: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -84,6 +86,7 @@ class ChoreInstance(Base):
     completed_by_id: Mapped[int | None] = mapped_column(ForeignKey("members.id"), nullable=True)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("members.id"), nullable=True)
+    photo: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {name, url, local}
 
     chore: Mapped[Chore] = relationship()
 
@@ -186,6 +189,8 @@ class Transaction(Base):
     date: Mapped[dt.date] = mapped_column(Date, index=True)
     # Prevents the scheduler double-paying recurring items such as allowance.
     dedupe_key: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
+    # Set when money moves into (negative) or out of (positive) a savings goal.
+    goal_id: Mapped[int | None] = mapped_column(ForeignKey("savings_goals.id"), nullable=True, index=True)
 
 
 class Budget(Base):
@@ -210,6 +215,10 @@ class HealthRecord(Base):
     unit: Mapped[str] = mapped_column(String(20), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     next_due: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    # Medication reminders: local times like ["08:00", "20:00"], weekdays (Mon=0; empty = every day), end date.
+    reminder_times: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)
+    reminder_days: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)
+    reminder_until: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     attachments: Mapped[list] = mapped_column(JSON, default=list)
 
 
@@ -289,6 +298,8 @@ class Alert(Base):
     audience: Mapped[list] = mapped_column(JSON, default=list)
     read_by: Mapped[list] = mapped_column(JSON, default=list)
     delivery: Mapped[dict] = mapped_column(JSON, default=dict)  # channel id -> "sent" | error text
+    # Extra data for the phone notification, e.g. {"url": "/#today", "taken_url": "..."} for medicine reminders.
+    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
@@ -343,3 +354,35 @@ class ServerKey(Base):
     __tablename__ = "server_keys"
     name: Mapped[str] = mapped_column(String(40), primary_key=True)
     value_enc: Mapped[str] = mapped_column(Text)
+
+
+class MedDose(Base):
+    """One scheduled dose of a medication reminder, and whether it was taken."""
+    __tablename__ = "med_doses"
+    __table_args__ = (UniqueConstraint("record_id", "scheduled_for"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_id: Mapped[int] = mapped_column(ForeignKey("health_records.id", ondelete="CASCADE"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id", ondelete="CASCADE"), index=True)
+    scheduled_for: Mapped[dt.datetime] = mapped_column(DateTime, index=True)  # UTC
+    status: Mapped[str] = mapped_column(String(8), default="due")  # due | taken | skipped | missed
+    taken_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    taken_by_id: Mapped[int | None] = mapped_column(ForeignKey("members.id"), nullable=True)
+    escalated: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    record: Mapped[HealthRecord] = relationship()
+
+
+class SavingsGoal(Base):
+    """A kid's savings goal; its balance is the money moved in via Transaction.goal_id."""
+    __tablename__ = "savings_goals"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    family_id: Mapped[int] = mapped_column(ForeignKey("families.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(120))
+    icon: Mapped[str] = mapped_column(String(16), default="🎯")
+    target_cents: Mapped[int] = mapped_column(Integer)
+    # Parents add this % of every deposit the kid makes (e.g. 50 = 50¢ per $1 saved).
+    match_percent: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(8), default="active")  # active | reached | spent
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    reached_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)

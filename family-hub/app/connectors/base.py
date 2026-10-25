@@ -51,9 +51,9 @@ class Status:
 class NeedsInput(Exception):
     """Raised by connect() when a second step is required (e.g. a 2FA code)."""
 
-    def __init__(self, step: str, message: str, fields: list[Field]):
+    def __init__(self, step: str, message: str, fields: list[Field], url: str = ""):
         super().__init__(message)
-        self.step, self.message, self.fields = step, message, fields
+        self.step, self.message, self.fields, self.url = step, message, fields, url
 
 
 class Ctx:

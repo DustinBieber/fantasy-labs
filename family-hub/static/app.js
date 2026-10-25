@@ -151,18 +151,23 @@ function shell(content) {
   </div>`;
 }
 
+let renderSeq = 0;
+
 async function render() {
   if (!S.token) { $("#root").innerHTML = authView(); return; }
+  const seq = ++renderSeq;  // a slower, older render must not overwrite a newer screen
   try {
     if (!S.me) await loadSession();
     const v = currentView();
     const html = await VIEWS[v]();
+    if (seq !== renderSeq) return;
     $("#root").innerHTML = shell(html);
     MOUNT[v]?.();
     const sub = location.hash.split("/")[1];
     const target = sub && document.getElementById(`conn-${sub.split("?")[0]}`);
     if (target) target.scrollIntoView(); else window.scrollTo({ top: 0 });
   } catch (err) {
+    if (seq !== renderSeq) return;
     if (!S.token) { $("#root").innerHTML = authView(); return; }
     $("#root").innerHTML = shell(`<div class="banner critical">${esc(err.message)}</div>`);
   }
@@ -276,6 +281,7 @@ VIEWS.today = async () => {
       <a href="#settings">Set up</a><button class="small ghost" data-act="dismissPushNag" aria-label="Dismiss">✕</button></div>` : ""}
     <h2>Today's chores</h2>${choreList(d.chores, "No chores today 🎉")}
     <h2>Coming up</h2><div class="list">${evs || `<div class="empty">Nothing on the calendar today or tomorrow.</div>`}</div>
+    ${d.meds.length ? `<h2>Medicine today</h2>${medList(d.meds)}` : ""}
     <h2>Homework due soon</h2>${homeworkList(d.homework)}
     ${locks}${fam}`;
 };
@@ -290,10 +296,33 @@ function choreList(items, emptyMsg) {
     const review = isParent() && i.status === "submitted"
       ? `<button class="small primary" data-act="review" data-id="${i.id}" data-ok="1">Approve</button><button class="small" data-act="review" data-id="${i.id}" data-ok="0">Redo</button>` : "";
     const statusChip = i.status === "submitted" ? `<span class="chip warn">Waiting for OK</span>` : i.status === "rejected" ? `<span class="chip bad">Try again</span>` : "";
+    const needsPhoto = canTap && i.requires_photo && !isParent();
+    const button = needsPhoto
+      ? `<label class="check" title="Take a photo to finish" role="button">📷<input type="file" accept="image/*" capture="environment" hidden data-chore-photo="${i.id}"></label>`
+      : `<button class="check ${cls}" ${canTap ? `data-act="complete" data-id="${i.id}"` : "disabled"} aria-label="Mark done">${icon}</button>`;
+    const photo = i.photo ? `<a href="${esc(i.photo.url)}" target="_blank" rel="noopener"><img class="thumb" src="${esc(i.photo.url)}" alt="Photo of ${esc(i.title)}" loading="lazy"></a>` : "";
     return `<div class="item ${i.status === "approved" ? "done" : ""}">
-      <button class="check ${cls}" ${canTap ? `data-act="complete" data-id="${i.id}"` : "disabled"} aria-label="Mark done">${icon}</button>
-      <div class="grow"><div class="title">${esc(i.title)}</div><div class="small muted">${esc(nameOf(i.assignee_id))} · ⭐ ${i.points}</div></div>
-      ${statusChip}${review}</div>`;
+      ${button}
+      <div class="grow"><div class="title">${esc(i.title)}</div><div class="small muted">${esc(nameOf(i.assignee_id))} · ⭐ ${i.points}${i.requires_photo ? " · 📷 photo" : ""}</div></div>
+      ${photo}${statusChip}${review}</div>`;
+  }).join("")}</div>`;
+}
+
+function fmtTime(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function medList(items) {
+  const chip = { taken: `<span class="chip good">Taken ✓</span>`, skipped: `<span class="chip">Skipped</span>`,
+    missed: `<span class="chip bad">Missed</span>`, due: `<span class="chip warn">Due now</span>`, upcoming: "" };
+  return `<div class="list">${items.map((m) => {
+    const mine = isParent() || m.member_id === S.me.id;
+    const open = m.status === "due" || m.status === "upcoming";
+    return `<div class="item"><div style="width:72px" class="small muted">${esc(m.time)}</div>${avatar(member(m.member_id), 26)}
+      <div class="grow"><div class="title">💊 ${esc(m.title)}</div></div>${chip[m.status] || ""}
+      ${mine && open ? `<button class="small primary" data-act="dose" data-id="${m.record_id}" data-slot="${m.slot}" data-status="taken">Taken</button>
+        <button class="small" data-act="dose" data-id="${m.record_id}" data-slot="${m.slot}" data-status="skipped">Skip</button>` : ""}</div>`;
   }).join("")}</div>`;
 }
 
@@ -340,6 +369,7 @@ VIEWS.chores = async () => {
       <label>Starting<input name="start_date" type="date" value="${ymd(new Date())}"></label></div>
       <div class="weekdays">${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="wd${i}" data-group="weekdays" value="${i}">${d}</label>`).join("")}</div>
       <label class="inline"><input type="checkbox" name="requires_approval" checked> Parent approves before points are awarded</label>
+      <label class="inline"><input type="checkbox" name="requires_photo"> Kid takes a photo to prove it's done 📷</label>
       <button class="primary">Add chore</button></form></details>` : "";
   return `<div class="top"><h1 class="grow">Chores</h1>
       <button data-act="choreDay" data-delta="-1" aria-label="Previous day">‹</button>
@@ -458,10 +488,12 @@ VIEWS.milestones = async () => {
 
 VIEWS.money = async () => {
   if (!isParent()) {
-    const w = await api("GET", `/api/finance/wallet/${S.me.id}`);
+    const [w, goals] = await Promise.all([api("GET", `/api/finance/wallet/${S.me.id}`), api("GET", "/api/finance/goals")]);
     return `<div class="top"><h1 class="grow">My money</h1></div>
       <div class="card"><div class="muted">In my wallet</div><div class="stat">${money(w.balance_cents)}</div>
       ${S.me.weekly_allowance_cents ? `<div class="small muted">Allowance: ${money(S.me.weekly_allowance_cents)} / week</div>` : ""}</div>
+      <h2>Saving for</h2><div class="grid">${goals.map(goalCard).join("") || `<div class="card muted">What do you want to save up for?</div>`}</div>
+      ${goalForm(S.me.id)}
       <details class="add card"><summary>− I spent some money</summary><form class="stack" data-form="kidSpend"><div class="fields">
         <label>Amount ($)<input name="amount" type="number" step="0.01" min="0.01" required></label>
         <label>On what<input name="description" required placeholder="Comic book"></label></div><button class="primary">Save</button></form></details>
@@ -500,8 +532,38 @@ VIEWS.money = async () => {
       <button class="primary">Save budget</button><p class="small muted">You'll get an alert at 80% and when a category goes over.</p></form></details>
     <h2>Kids' wallets</h2><div class="grid">${s.wallets.map((w) => `<div class="card row">${avatar(member(w.member_id))}<div class="grow"><div class="title">${esc(w.name)}</div>
       <div class="stat">${money(w.balance_cents)}</div><div class="small muted">${w.weekly_allowance_cents ? money(w.weekly_allowance_cents) + "/week allowance" : "No allowance set"}</div></div></div>`).join("") || `<div class="card muted">Add kids in Settings.</div>`}</div>
+    ${s.wallets.some((w) => w.goals.length) ? `<h2>Savings goals</h2><div class="grid">${s.wallets.flatMap((w) => w.goals).map(goalCard).join("")}</div>` : ""}
+    ${s.wallets.length ? goalForm(null) : ""}
     <h2>Transactions</h2>${txList(txs, true)}`;
 };
+
+function goalCard(g) {
+  const kid = member(g.member_id);
+  const done = g.status === "reached";
+  const btns = g.status === "spent" ? `<span class="chip good">Bought 🛍️</span>` : [
+    `<button class="small primary" data-act="goalMove" data-id="${g.id}" data-kind="deposit">+ Add money</button>`,
+    isParent() ? `<button class="small" data-act="goalMove" data-id="${g.id}" data-kind="gift">🎁 Gift</button>` : "",
+    g.saved_cents ? `<button class="small" data-act="goalMove" data-id="${g.id}" data-kind="withdraw">Take out</button>` : "",
+    done || isParent() ? `<button class="small ${done ? "primary" : ""}" data-act="goalSpend" data-id="${g.id}">${done ? "Buy it! 🎉" : "Mark bought"}</button>` : "",
+    isParent() ? `<button class="small" data-act="goalMatch" data-id="${g.id}" data-pct="${g.match_percent}">Match ${g.match_percent}%</button>` : "",
+    `<button class="small ghost" data-act="goalClose" data-id="${g.id}" aria-label="Cancel goal">✕</button>`,
+  ].join(" ");
+  return `<div class="card stack"><div class="row"><span style="font-size:30px">${esc(g.icon)}</span>
+      <div class="grow"><h3>${esc(g.title)}</h3><div class="small muted">${isParent() ? esc(kid?.name || "") + " · " : ""}${money(g.saved_cents)} of ${money(g.target_cents)}${g.match_percent ? ` · parents add ${g.match_percent}%` : ""}</div></div>
+      ${done ? `<span class="chip good">Goal reached!</span>` : `<strong>${g.percent}%</strong>`}</div>
+    <div class="bar"><div style="width:${g.percent}%;${done ? "background:var(--good)" : ""}"></div></div>
+    <div class="row">${btns}</div></div>`;
+}
+
+function goalForm(memberId) {
+  return `<details class="add card"><summary>+ New savings goal</summary><form class="stack" data-form="addGoal"><div class="fields">
+    ${memberId ? `<input type="hidden" name="member_id" value="${memberId}">` : `<label>For<select name="member_id">${memberOptions(null, { kidsOnly: true })}</select></label>`}
+    <label>Saving for<input name="title" required placeholder="New bike"></label>
+    <label>Goal ($)<input name="target" type="number" step="0.01" min="1" required></label>
+    <label>Emoji<input name="icon" value="🎯" maxlength="4"></label>
+    ${isParent() ? `<label>Parent match (%)<input name="match_percent" type="number" min="0" max="200" value="0"></label>` : ""}</div>
+    <button class="primary">Start saving</button></form></details>`;
+}
 
 function txList(txs, canDelete = false) {
   if (!txs.length) return `<div class="list"><div class="empty">Nothing yet.</div></div>`;
@@ -523,20 +585,26 @@ VIEWS.health = async () => {
     if (!rows.length) return "";
     return `<h2>${label}</h2><div class="list">${rows.map((r) => `<div class="item">${avatar(member(r.member_id), 28)}<div class="grow">
       <div class="title">${esc(r.title)}${r.value ? ` — ${esc(r.value)} ${esc(r.unit)}` : ""}</div>
-      <div class="small muted">${r.date ? dayLabel(r.date) : ""}${r.next_due ? ` · next due ${dayLabel(r.next_due)}` : ""}${r.notes ? " · " + esc(r.notes) : ""}</div>${attachLinks(r.attachments)}</div>
+      <div class="small muted">${r.date ? dayLabel(r.date) : ""}${r.next_due ? ` · next due ${dayLabel(r.next_due)}` : ""}${r.notes ? " · " + esc(r.notes) : ""}</div>
+      ${r.reminder_times.length ? `<div class="small">⏰ ${r.reminder_times.map(fmtTime).join(", ")}${r.reminder_days.length ? " · " + r.reminder_days.map((d) => WEEKDAYS[d]).join(" ") : " · daily"}${r.reminder_until ? ` · until ${dayLabel(r.reminder_until)}` : ""}</div>` : ""}${attachLinks(r.attachments)}</div>
       ${isParent() ? `<label class="btn small" title="Attach a document">📎<input type="file" hidden data-upload="health" data-id="${r.id}"></label>
       <button class="small ghost" data-act="delHealth" data-id="${r.id}" aria-label="Delete">✕</button>` : ""}</div>`).join("")}</div>`;
   }).join("");
   return `<div class="top"><h1 class="grow">Health</h1>
       ${isParent() ? `<select data-act="healthMember" style="width:auto">${memberOptions(who, { all: true })}</select>` : ""}</div>
-    ${isParent() ? `<details class="add card"><summary>+ Add a record</summary><form class="stack" data-form="addHealth"><div class="fields">
+    ${isParent() ? `<details class="add card"><summary>+ Add a record</summary><form class="stack" data-form="addHealth" data-kind="appointment"><div class="fields">
       <label>Who<select name="member_id">${memberOptions(who ?? S.members[0]?.id)}</select></label>
-      <label>Type<select name="kind">${Object.entries(HEALTH_KINDS).map(([k, l]) => `<option value="${k}">${l.slice(2).trim()}</option>`).join("")}</select></label>
+      <label>Type<select name="kind" data-act="healthKind">${Object.entries(HEALTH_KINDS).map(([k, l]) => `<option value="${k}">${l.slice(2).trim()}</option>`).join("")}</select></label>
       <label>Title<input name="title" required placeholder="Annual checkup / Amoxicillin / Height"></label>
       <label>Date<input name="date" type="date" value="${ymd(new Date())}"></label>
       <label>Value<input name="value" placeholder="e.g. 250 or 4'2&quot;"></label>
       <label>Unit<input name="unit" placeholder="mg, in, lb"></label>
       <label>Next due<input name="next_due" type="date"></label></div>
+      <div class="med-only stack"><strong class="small">💊 Reminders (sent to that person's phone; parents are told if a kid misses one)</strong>
+        <div class="fields"><label>Times<input name="reminder_times" placeholder="08:00, 20:00"></label>
+        <label>Until (optional)<input name="reminder_until" type="date"></label></div>
+        <div class="weekdays">${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="rd${i}" data-group="reminder_days" value="${i}">${d}</label>`).join("")}</div>
+        <div class="small muted">Leave all days unticked for every day.</div></div>
       <label>Notes<textarea name="notes" placeholder="Doctor, dosage schedule, reactions…"></textarea></label>
       <button class="primary">Save</button><p class="small muted">Records with a "next due" date show up in the daily digest a week ahead.</p></form></details>` : ""}
     ${groups || `<div class="card muted" style="margin-top:12px">No health records yet.</div>`}`;
@@ -820,8 +888,9 @@ VIEWS.connections = async () => {
     const items = d.items.filter((i) => i.category === cat);
     return items.length ? `<h2>${label}</h2>${items.map((i) => connCard(i, d, fam)).join("")}` : "";
   }).join("");
-  const flash = new URLSearchParams(location.hash.split("?")[1] || "").get("google");
-  return `${flash ? `<div class="banner ${flash === "connected" ? "info" : "critical"}">Google: ${esc(flash)}</div>` : ""}<div class="top"><h1 class="grow">Connections</h1><span class="chip ${d.connected === d.total ? "good" : "brand"}">${d.connected} of ${d.total} connected</span></div>
+  const qs = new URLSearchParams(location.hash.split("?")[1] || "");
+  const flash = qs.get("google") ? `Google: ${qs.get("google")}` : qs.get("smartthings") ? `SmartThings: ${qs.get("smartthings")}` : "";
+  return `${flash ? `<div class="banner ${flash.endsWith("connected") ? "info" : "critical"}">${esc(flash)}</div>` : ""}<div class="top"><h1 class="grow">Connections</h1><span class="chip ${d.connected === d.total ? "good" : "brand"}">${d.connected} of ${d.total} connected</span></div>
     <div class="bar" style="margin-bottom:8px"><div style="width:${pct}%"></div></div>
     <p class="small muted">Everything the hub can talk to. “Bridge” items are services with no public API; the hub reaches them another
       way today, and the slot is ready for a direct connection if one appears.</p>${groups}`;
@@ -1061,6 +1130,26 @@ const ACT = {
   },
   connSync: async (d) => { const r = await api("POST", `/api/connectors/${d.key}/sync`); toast(r.message || "Up to date"); },
   connOff: async (d) => { if (confirm("Disconnect this?")) { await api("DELETE", `/api/connectors/${d.key}`); delete S.connStep[d.key]; } else return "noRender"; },
+  dose: async (d) => {
+    await api("POST", `/api/meds/${d.id}/dose`, { slot: d.slot, status: d.status });
+    toast(d.status === "taken" ? "Marked as taken ✓" : "Skipped");
+  },
+  goalMove: async (d) => {
+    const label = { deposit: "How much to add from the wallet? ($)", gift: "Gift amount ($)", withdraw: "How much to take out? ($)" }[d.kind];
+    const v = prompt(label, "5");
+    if (!v) return "noRender";
+    const path = d.kind === "withdraw" ? "withdraw" : "deposit";
+    const g = await api("POST", `/api/finance/goals/${d.id}/${path}`, { amount_cents: toCents(v), gift: d.kind === "gift" });
+    toast(g.status === "reached" ? "🎉 Goal reached!" : `${g.percent}% there`);
+    S.members = await api("GET", "/api/members");
+  },
+  goalSpend: async (d) => { if (!confirm("Mark this goal as bought?")) return "noRender"; await api("POST", `/api/finance/goals/${d.id}/spend`); toast("Enjoy! 🛍️"); },
+  goalMatch: async (d) => {
+    const v = prompt("Parents add what % of every amount saved? (0 = no match)", d.pct);
+    if (v === null) return "noRender";
+    await api("PATCH", `/api/finance/goals/${d.id}`, { match_percent: Number(v) || 0 });
+  },
+  goalClose: async (d) => { if (!confirm("Cancel this goal? Saved money goes back to the wallet.")) return "noRender"; await api("DELETE", `/api/finance/goals/${d.id}`); },
   rotateHooks: async () => {
     if (!confirm("Old webhook URLs will stop working. Update your automations afterwards. Continue?")) return "noRender";
     await api("POST", "/api/family/rotate-hook-token");
@@ -1068,6 +1157,7 @@ const ACT = {
 };
 
 const CHANGE = {
+  healthKind: (el) => { el.form.dataset.kind = el.value; return "noRender"; },
   fileStorage: async (el) => { await api("PATCH", "/api/family", { settings: { file_storage: el.value } }); toast("Saved"); return "noRender"; },
   wifiPresence: async (el) => { await api("PATCH", "/api/family", { settings: { wifi_presence: el.checked } }); toast(el.checked ? "Watching home Wi-Fi" : "Wi-Fi presence off"); return "noRender"; },
   scMember: (el) => localStore("fh_sc_member", el.value),
@@ -1081,11 +1171,17 @@ const CHANGE = {
 };
 
 async function connResult(key, r) {
+  if (r.step === "redirect" && r.url) { location.href = r.url; return "noRender"; }
   if (r.ok) { delete S.connStep[key]; toast(r.message || "Connected ✅"); }
   else S.connStep[key] = r;
 }
 
 const FORMS = {
+  addGoal: async (f) => {
+    await api("POST", "/api/finance/goals", { member_id: Number(f.member_id), title: f.title, icon: f.icon || "🎯",
+      target_cents: toCents(f.target), match_percent: f.match_percent ?? 0 });
+    toast("Goal created 🎯");
+  },
   connect: async (f, form) => connResult(form.dataset.key, await api("POST", `/api/connectors/${form.dataset.key}/connect`, { values: f })),
   connFinish: async (f, form) => connResult(form.dataset.key, await api("POST", `/api/connectors/${form.dataset.key}/finish`, { values: f })),
   connMap: async (f, form) => {
@@ -1105,7 +1201,8 @@ const FORMS = {
   pinLogin: async (f) => afterAuth(await api("POST", "/api/auth/pin-login", { join_code: S.joinCode, member_id: S.pickedKid, pin: f.pin })),
   addChore: async (f) => {
     await api("POST", "/api/chores", { title: f.title, points: f.points ?? 0, assignee_id: intOrNull(f.assignee_id), recurrence: f.recurrence,
-      weekdays: f.weekdays || [], start_date: f.start_date || null, requires_approval: f.requires_approval });
+      weekdays: f.weekdays || [], start_date: f.start_date || null, requires_approval: f.requires_approval,
+      requires_photo: f.requires_photo });
     toast("Chore added");
   },
   addReward: async (f) => { await api("POST", "/api/rewards", f); toast("Reward added"); },
@@ -1129,7 +1226,12 @@ const FORMS = {
   },
   setBudget: async (f) => { await api("PUT", "/api/finance/budgets", { category: f.category, monthly_limit_cents: toCents(f.limit) }); },
   addHealth: async (f) => {
-    await api("POST", "/api/health", { ...f, member_id: Number(f.member_id), date: f.date || null, next_due: f.next_due || null });
+    const times = (f.reminder_times || "").split(/[,\s]+/).filter(Boolean);
+    const body = { ...f, member_id: Number(f.member_id), date: f.date || null, next_due: f.next_due || null,
+      reminder_times: f.kind === "medication" ? times : [], reminder_days: f.kind === "medication" ? (f.reminder_days || []) : [],
+      reminder_until: f.kind === "medication" ? (f.reminder_until || null) : null };
+    await api("POST", "/api/health", body);
+    if (times.length && f.kind === "medication") toast(`Reminders set for ${times.join(", ")} 💊`);
   },
   addFence: async (f) => { await api("POST", "/api/geofences", f); toast("Place saved"); },
   doorRules: async (f) => { await api("PATCH", "/api/family", { settings: f }); toast("Rules saved"); },
@@ -1177,6 +1279,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.dataset.upload) { run(upload, el); return; }
+  if (el.dataset.chorePhoto) { run(choreProof, el); return; }
   const fn = CHANGE[el.dataset.act];
   if (fn) run(fn, el);
 });
@@ -1189,6 +1292,33 @@ document.addEventListener("submit", (e) => {
   if (btn) btn.disabled = true;
   run(FORMS[form.dataset.form], formData(form), form).finally(() => { if (btn?.isConnected) btn.disabled = false; });
 });
+
+// Phone photos are 3–12 MB; shrink to ~1600px JPEG before upload (falls back to the original if the
+// browser can't decode it, e.g. some HEIC files).
+async function shrinkImage(file, max = 1600) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.82));
+    return blob ? new File([blob], "chore.jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    return file;
+  }
+}
+
+async function choreProof(input) {
+  const file = input.files[0];
+  if (!file) return "noRender";
+  toast("Sending your photo…");
+  const fd = new FormData();
+  fd.append("file", await shrinkImage(file));
+  const r = await api("POST", `/api/chores/instances/${input.dataset.chorePhoto}/photo`, fd);
+  toast(r.status === "approved" ? `Nice! +${r.points} points` : "Sent to a parent for approval 👍");
+}
 
 async function upload(input) {
   const file = input.files[0];

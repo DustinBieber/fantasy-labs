@@ -112,12 +112,12 @@ def lock_out(lk: Lock) -> dict:
     return {"id": lk.id, "name": lk.name, "provider": lk.provider, "external_id": lk.external_id,
             "state": lk.state, "door": lk.door, "battery": lk.battery,
             "state_changed_at": iso(lk.state_changed_at), "door_changed_at": iso(lk.door_changed_at),
-            "can_control": lk.provider in ("apple_home", "homeassistant", "simulated")}
+            "can_control": lk.provider in ("apple_home", "homeassistant", "smartthings", "simulated")}
 
 
 class LockIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    provider: str = Field(default="webhook", pattern="^(apple_home|homeassistant|webhook|simulated)$")
+    provider: str = Field(default="webhook", pattern="^(apple_home|homeassistant|smartthings|webhook|simulated)$")
     external_id: str = Field(min_length=1, max_length=120)
 
 

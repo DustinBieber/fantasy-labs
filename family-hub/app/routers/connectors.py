@@ -2,7 +2,7 @@
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -52,7 +52,7 @@ def _run(fn, ctx: Ctx, values: dict) -> dict:
         return {"ok": True, "message": fn(ctx, values)}
     except NeedsInput as need:
         return {"ok": False, "step": need.step, "message": need.message,
-                "fields": [f.__dict__ for f in need.fields]}
+                "fields": [f.__dict__ for f in need.fields], "url": need.url}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -116,6 +116,23 @@ def set_mapping(key: str, body: MapIn, me: Member = Depends(require_parent), db:
 def disconnect(key: str, me: Member = Depends(require_parent), db: Session = Depends(get_db)):
     _connector(key).disconnect(Ctx(db, me.family, key))
     return {"ok": True}
+
+
+@router.get("/connectors/smartthings/callback", include_in_schema=False)
+def smartthings_callback(state: str = "", code: str = "", error: str = "", db: Session = Depends(get_db)):
+    from ..services import smartthings
+
+    if error or not code:
+        return RedirectResponse("/#connections/smartthings?smartthings=denied")
+    try:
+        integ = smartthings.finish(db, state, code)
+        found = smartthings.discover_locks(db, db.get(Family, integ.family_id))
+        integ.account = f"{len(found)} lock(s)"
+        integ.last_sync_at = utcnow()
+        db.commit()
+    except Exception:
+        return RedirectResponse("/#connections/smartthings?smartthings=failed")
+    return RedirectResponse("/#connections/smartthings?smartthings=connected")
 
 
 # ---------------------------------------------------------------- family calendar feed (.ics)

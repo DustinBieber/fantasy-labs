@@ -11,9 +11,9 @@ from ..crypto import decrypt_json, encrypt_json
 from ..db import get_db
 from ..models import Alert, Chore, ChoreInstance, Event, Homework, Integration, Lock, Member, NotificationChannel, Redemption
 from ..security import current_member, get_owned, require_parent
-from ..services import google, http, icloud
+from ..services import google, http, icloud, meds
 from ..services.chores import ensure_instances
-from ..services.notify import CHANNEL_KINDS, REQUIRED_FIELDS, send
+from ..services.notify import CHANNEL_KINDS, REQUIRED_FIELDS, send, visible_to
 from ..timeutil import iso, local_now, utcnow
 from .calendar import event_out
 from .chores import instance_out
@@ -27,9 +27,7 @@ router = APIRouter(prefix="/api", tags=["alerts, integrations, dashboard"])
 # ---------------------------------------------------------------- alerts
 
 def _visible(q, me: Member):
-    alerts = q.all()
-    return [a for a in alerts if (not a.audience or me.role in a.audience)
-            and (me.role == "parent" or a.member_id in (None, me.id))]
+    return [a for a in q.all() if visible_to(a, me)]
 
 
 def alert_out(a: Alert, me: Member) -> dict:
@@ -297,6 +295,7 @@ def dashboard(me: Member = Depends(current_member), db: Session = Depends(get_db
         "homework": [homework_out(h) for h in hw_q.order_by(Homework.due_date)],
         "unread_alerts": len(unread),
         "critical_alerts": [alert_out(a, me) for a in unread if a.severity == "critical"][:5],
+        "meds": meds.today_schedule(db, fam, fam.members if me.role == "parent" else [me]),
     }
     if me.role == "parent":
         out["members"] = [member_out(db, m) for m in fam.members]

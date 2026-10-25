@@ -7,16 +7,18 @@ their iPhone or Android home screen. **Nothing to buy and no App Store apps.**
 
 | Area | What it does |
 |---|---|
-| **Chores & rewards** | One-off, daily, weekly or monthly chores. Kids check them off, parents approve, points are added. Kids spend points in a reward shop (points held while waiting, refunded if declined). Parents can give bonus points or take points away. |
+| **Chores & rewards** | One-off, daily, weekly or monthly chores, optionally with **photo proof**. Kids check them off, parents approve, points are added. Kids spend points in a reward shop (points held while waiting, refunded if declined). Parents can give bonus points or take points away. |
 | **Calendar** | Family events tagged with people. Two-way sync with **Google Calendar** and **iCloud Calendar**. |
 | **Homework** | Per-kid assignments, due dates, optional bonus points, photo or file attachments. |
 | **Milestones** | A timeline of firsts and big days, with photos. |
-| **Money** | Household income and expenses, monthly budgets (alerts at 80% and when over), kid wallets, automatic weekly allowance. |
-| **Health** | Appointments, medications, allergies, immunizations, growth and vitals. "Next due" dates appear in the daily digest. Kids only see their own records. |
+| **Money** | Household income and expenses, monthly budgets (alerts at 80% and when over), kid wallets, automatic weekly allowance, **savings goals** with parent matching and gifts. |
+| **Health** | Appointments, medications with **reminders at set times** (Taken ✓ button; parents alerted if a kid misses one), allergies, immunizations, growth and vitals. "Next due" dates appear in the daily digest. Kids only see their own records. |
 | **Location** | Live map, places with arrive/leave alerts, "who's home." |
 | **Doors** | Smart-lock status, activity log, lock/unlock. Alerts for a jammed bolt, unlock or open during quiet hours, a door left unlocked or open too long, low battery, and **"nobody's home and the door is unlocked."** |
 | **Alerts** | **Free push notifications** to each phone, **iMessage** and SMS from the Mac, Gmail, and a daily summary of tomorrow. |
 | **Connections** | One checklist of every outside service with live status, setup steps and error reporting. |
+
+> **Step-by-step setup for a Mac mini + MacBook Air + Android (Galaxy) household: see [SETUP.md](SETUP.md).**
 
 ## What's free, and how each connection works
 
@@ -34,7 +36,7 @@ their iPhone or Android home screen. **Nothing to buy and no App Store apps.**
 | Location | ① **Apple Find My** (all family iPhones) ② **Google Maps location sharing** (Android) ③ Home Wi-Fi presence ④ iPhone **Shortcuts** arrive/leave ⑤ live location while the app is open | Free | None |
 | School, sports, team calendars | Paste their calendar links (webcal/.ics), optionally tagged to a kid | Free | None |
 | Hub calendar on every phone | One-tap subscribe link per person (events, homework due, appointments, birthdays) | Free | None |
-| Philips smart deadbolt | **Apple Home** (Matter models such as the 4000 series): the Mac runs Shortcuts to lock and unlock, and Home automations report status instantly. Other models: webhook or Home Assistant. | Free | None |
+| Philips smart deadbolt | **SmartThings** (Galaxy phones; official API, lock/unlock + status) or **Apple Home** (Matter models such as the 4000 series): the Mac runs Shortcuts to lock and unlock, and Home automations report status instantly. Other models: webhook or Home Assistant. | Free | None |
 | HTTPS address for phones | **Tailscale Funnel** on the Mac gives a permanent `https://…ts.net` address | Free | None (only the Mac runs Tailscale) |
 
 **Find My and Google Maps location sharing have no official API.** The hub uses the same unofficial web
@@ -212,7 +214,7 @@ that point at the route that works now, so a real implementation can replace the
 
 ```bash
 cd family-hub && python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt && pytest          # 64 tests, outbound calls mocked
+pip install -r requirements-dev.txt && pytest          # 71 tests, outbound calls mocked
 uvicorn app.main:app --reload                           # http://localhost:8000, API docs at /docs
 ```
 ```

@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -8,22 +8,25 @@ from ..db import get_db
 from ..models import Chore, ChoreInstance, Member, PointsEntry, Redemption, Reward
 from ..security import current_member, ensure_self_or_parent, get_owned, require_parent
 from ..services import chores as svc
+from ..services import files
 from ..services.notify import raise_alert
 from ..timeutil import iso, local_today
 
 router = APIRouter(prefix="/api", tags=["chores & rewards"])
+MAX_PHOTO_BYTES = 15 * 1024 * 1024
 
 
 def chore_out(c: Chore) -> dict:
     return {"id": c.id, "title": c.title, "notes": c.notes, "points": c.points, "assignee_id": c.assignee_id,
             "recurrence": c.recurrence, "weekdays": c.weekdays, "start_date": c.start_date.isoformat(),
-            "requires_approval": c.requires_approval, "active": c.active}
+            "requires_approval": c.requires_approval, "requires_photo": bool(c.requires_photo), "active": c.active}
 
 
 def instance_out(i: ChoreInstance) -> dict:
     return {"id": i.id, "chore_id": i.chore_id, "title": i.chore.title, "points": i.chore.points,
             "assignee_id": i.chore.assignee_id, "due_date": i.due_date.isoformat(), "status": i.status,
-            "completed_by_id": i.completed_by_id, "completed_at": iso(i.completed_at)}
+            "completed_by_id": i.completed_by_id, "completed_at": iso(i.completed_at),
+            "requires_photo": bool(i.chore.requires_photo), "photo": i.photo}
 
 
 class ChoreIn(BaseModel):
@@ -35,6 +38,7 @@ class ChoreIn(BaseModel):
     weekdays: list[int] = Field(default_factory=list)
     start_date: date | None = None
     requires_approval: bool = True
+    requires_photo: bool = False
 
 
 class ChorePatch(BaseModel):
@@ -45,6 +49,7 @@ class ChorePatch(BaseModel):
     recurrence: str | None = Field(default=None, pattern="^(once|daily|weekly|monthly)$")
     weekdays: list[int] | None = None
     requires_approval: bool | None = None
+    requires_photo: bool | None = None
     active: bool | None = None
 
 
@@ -116,6 +121,21 @@ def _instance(db, me, inst_id) -> ChoreInstance:
 @router.post("/chores/instances/{inst_id}/complete")
 def complete_instance(inst_id: int, me: Member = Depends(current_member), db: Session = Depends(get_db)):
     return instance_out(svc.complete(db, me.family, _instance(db, me, inst_id), me))
+
+
+@router.post("/chores/instances/{inst_id}/photo")
+async def complete_with_photo(inst_id: int, file: UploadFile = File(...), me: Member = Depends(current_member),
+                              db: Session = Depends(get_db)):
+    """Finish a chore with photo proof (stored on the hub, shown to the approving parent)."""
+    inst = _instance(db, me, inst_id)
+    svc.check_can_complete(inst, me)
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(415, "Please send a photo")
+    content = await file.read(MAX_PHOTO_BYTES + 1)
+    if len(content) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Photo is too large (15 MB max)")
+    photo = files.save("chores", inst.id, file.filename or "photo.jpg", content)
+    return instance_out(svc.complete(db, me.family, inst, me, photo=photo))
 
 
 class ReviewIn(BaseModel):

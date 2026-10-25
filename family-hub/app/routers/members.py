@@ -147,7 +147,8 @@ class FamilyPatch(BaseModel):
 
 ALLOWED_SETTINGS = {"unlocked_minutes", "door_open_minutes", "quiet_start", "quiet_end", "notify_all_unlocks",
                     "battery_low_percent", "allowance_weekday", "digest_hour", "push_min_severity",
-                    "wifi_presence", "wifi_away_minutes", "file_storage"}
+                    "wifi_presence", "wifi_away_minutes", "file_storage",
+                    "med_escalate_minutes"}
 
 
 @router.patch("/family")

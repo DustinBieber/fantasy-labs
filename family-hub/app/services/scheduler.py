@@ -11,7 +11,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Chore, ChoreInstance, Event, Family, HealthRecord, Homework, Integration, Member, Redemption, Transaction
 from ..timeutil import local_now, utcnow
-from . import chores, google, locks, presence
+from . import chores, google, locks, meds, presence
 from .notify import raise_alert
 
 log = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ def tick(db: Session, now: datetime | None = None) -> None:
     except Exception:
         log.exception("Backup failed")
     for family in db.query(Family).all():
-        for step in (_chores, _allowance, _presence, _locks, _calendars, _connectors, _digest):
+        for step in (_chores, _allowance, _meds, _presence, _locks, _calendars, _connectors, _digest):
             try:
                 step(db, family, now)
             except Exception:
@@ -56,6 +56,10 @@ def _allowance(db: Session, family: Family, now: datetime) -> None:
         db.commit()
         raise_alert(db, family, "finance", f"Allowance paid: ${kid.weekly_allowance_cents / 100:.2f}",
                     member_id=kid.id, audience=["child"])
+
+
+def _meds(db: Session, family: Family, now: datetime) -> None:
+    meds.tick(db, family, now)
 
 
 def _presence(db: Session, family: Family, now: datetime) -> None:

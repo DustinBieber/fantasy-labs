@@ -219,8 +219,8 @@ class PhilipsLock(Connector):
     name = "Philips smart deadbolt"
     category = "home"
     availability = "bridge"
-    summary = ("Philips Home Access has no public API. Matter models connect through Apple Home; Wi-Fi models send "
-               "status through the lock webhook (any automation) or Home Assistant.")
+    summary = ("Philips Home Access has no public API. Matter models (4000 series) connect through SmartThings on a "
+               "Galaxy phone or Apple Home on an iPhone; Wi-Fi models report through the lock webhook or Home Assistant.")
     manage = "#home"
 
     def status(self, ctx: Ctx) -> Status:
@@ -234,12 +234,64 @@ class PhilipsLock(Connector):
                       if heard else "Added, but no status received yet")
 
 
+class SmartThings(Connector):
+    key = "smartthings"
+    name = "Samsung SmartThings (Galaxy phones, Matter locks)"
+    category = "home"
+    summary = ("Lock status, door open/closed, battery, and lock/unlock for any lock in your SmartThings app, "
+               "including a Philips Matter lock paired from your Galaxy phone. Official Samsung API, free.")
+    fields = [Field("client_id", "OAuth Client ID"),
+              Field("client_secret", "OAuth Client Secret", "password", secret=True)]
+    steps = [
+        "Pair the lock in the SmartThings app on your Galaxy phone (+ → Device → scan the lock's Matter code).",
+        "On your laptop, install Node.js (nodejs.org), then run in Terminal:  npx @smartthings/cli apps:create",
+        "Choose “OAuth-In App”, name it Family Hub, pick scopes r:devices:*, x:devices:* and r:locations:*, "
+        "and enter the redirect URI shown below. Copy the Client ID and Client Secret it prints.",
+        "Paste them here and press Connect, then sign in to Samsung and allow access. Your locks appear on the Doors tab.",
+    ]
+    docs_url = "https://developer.smartthings.com/docs/getting-started/authorization-and-permissions"
+
+    def connect(self, ctx: Ctx, values: dict) -> str:
+        from ..services import smartthings
+        from .base import NeedsInput
+
+        ctx.save(account="Signing in…", secret={"client_id": values["client_id"].strip(),
+                                                "client_secret": values["client_secret"].strip()})
+        raise NeedsInput("redirect", "Opening Samsung sign-in…", [], url=smartthings.start(ctx.db, ctx.family))
+
+    def poll(self, ctx: Ctx) -> str:
+        from ..services import locks, smartthings
+
+        found = smartthings.discover_locks(ctx.db, ctx.family)
+        locks.poll(ctx.db, ctx.family)
+        integ = ctx.integration
+        integ.account = f"{len(found)} lock(s)"
+        ctx.db.commit()
+        return f"{len(found)} lock(s) found"
+
+    def status(self, ctx: Ctx) -> Status:
+        integ = ctx.integration
+        if integ is None:
+            return Status("off", f"Redirect URI for the CLI: {smartthings_redirect()}")
+        from ..crypto import decrypt_json
+
+        if not decrypt_json(integ.secret_enc).get("refresh_token"):
+            return Status("attention", "Finish signing in to Samsung (press Connect again)")
+        return super().status(ctx)
+
+
+def smartthings_redirect() -> str:
+    from ..services import smartthings
+
+    return smartthings.redirect_uri()
+
+
 CATALOG: list[Connector] = [
     GoogleCalendar(), ICloudCalendar(), ICSFeeds(), HubFeed(),
     FindMy(), GoogleLocationSharing(), WifiPresence(), Shortcuts(),
     WebPush(), IMessage(), GoogleMessages(), GoogleChat(),
     GmailAppPassword(),
     FileStorage(),
-    PhilipsLock(), AppleHome(), HomeAssistant(),
+    PhilipsLock(), SmartThings(), AppleHome(), HomeAssistant(),
 ]
 BY_KEY = {c.key: c for c in CATALOG}

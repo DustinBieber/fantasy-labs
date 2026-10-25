@@ -290,3 +290,49 @@ def test_channel_status_reflects_failed_delivery(parent, monkeypatch):
     parent.c.post(hook, json={"title": "Water leak", "severity": "critical"})
     item = _item(parent, "imessage")
     assert item["state"] == "attention" and "signed in" in item["detail"]
+
+
+def test_smartthings_oauth_locks_and_token_rotation(parent, db, outbound):
+    from urllib.parse import parse_qs, urlparse
+
+    from app.crypto import decrypt_json, encrypt_json
+
+    tokens = iter([{"access_token": "at1", "refresh_token": "rt1", "expires_in": 86399},
+                   {"access_token": "at2", "refresh_token": "rt2", "expires_in": 86399}])
+    outbound.routes[("POST", "https://auth-global.api.smartthings.com/oauth/token")] = lambda req: httpx.Response(200, json=next(tokens))
+    outbound.routes[("GET", "https://api.smartthings.com/v1/devices?")] = httpx.Response(
+        200, json={"items": [{"deviceId": "d-1", "label": "Front Door"}]})
+    lock_status = {"lock": {"lock": {"value": "unlocked"}}, "battery": {"battery": {"value": 64}},
+                   "contactSensor": {"contact": {"value": "closed"}}}
+    outbound.routes[("GET", "https://api.smartthings.com/v1/devices/d-1/status")] = lambda req: httpx.Response(
+        200, json={"components": {"main": lock_status}})
+    outbound.routes[("POST", "https://api.smartthings.com/v1/devices/d-1/commands")] = httpx.Response(200, json={})
+
+    r = parent.post("/api/connectors/smartthings/connect", {"values": {"client_id": "cid", "client_secret": "sec"}}).json()
+    assert r["step"] == "redirect"
+    q = parse_qs(urlparse(r["url"]).query)
+    assert q["redirect_uri"] == ["https://hub.example/api/connectors/smartthings/callback"] and "x:devices:*" in q["scope"][0]
+    assert _item(parent, "smartthings")["state"] == "attention"  # not signed in yet
+
+    cb = parent.c.get("/api/connectors/smartthings/callback", params={"state": q["state"][0], "code": "c"}, follow_redirects=False)
+    assert cb.headers["location"].endswith("smartthings=connected")
+    token_call = next(c for c in outbound.calls if "oauth/token" in str(c.url))
+    assert b"grant_type=authorization_code" in token_call.content and token_call.headers["authorization"].startswith("Basic ")
+    assert _item(parent, "smartthings")["state"] == "connected"
+
+    from app.services import locks
+    locks.poll(db, db.query(Family).one())
+    [lk] = parent.get("/api/locks").json()
+    assert (lk["name"], lk["state"], lk["battery"], lk["door"], lk["can_control"]) == ("Front Door", "unlocked", 64, "closed", True)
+
+    # Expired access token → refresh with the single-use refresh token, store the new one.
+    integ = db.query(Integration).filter_by(provider="smartthings").one()
+    sec = decrypt_json(integ.secret_enc)
+    sec["expires_at"] = (utcnow() - timedelta(minutes=1)).isoformat()
+    integ.secret_enc = encrypt_json(sec)
+    db.commit()
+    assert parent.post(f"/api/locks/{lk['id']}/command", {"action": "lock"}).json()["state"] == "locked"
+    cmd = outbound.calls[-1]
+    assert cmd.headers["authorization"] == "Bearer at2" and b'"command":"lock"' in cmd.content.replace(b" ", b"")
+    db.expire_all()
+    assert decrypt_json(db.query(Integration).filter_by(provider="smartthings").one().secret_enc)["refresh_token"] == "rt2"
