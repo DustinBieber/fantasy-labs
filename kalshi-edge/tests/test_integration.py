@@ -281,3 +281,15 @@ def test_settings_validation_and_stale_prices(client, fake):
     client.put("/api/settings", json={"staleness_minutes": {"kalshi_scan": -1}})
     nfl = client.get("/api/nfl").json()
     assert nfl["opportunities"] and all(o["tier"] == "P" and "stale" in o["tier_reason"] for o in nfl["opportunities"])
+
+
+def test_duplicate_market_in_one_batch_does_not_break_the_scan(client, fake):
+    orig = fake.events_payload
+
+    def dup():
+        p = orig()
+        p["events"][0]["markets"] = p["events"][0]["markets"] * 2
+        return p
+    fake.events_payload = dup
+    assert run(client, "kalshi_scan")["markets"] == 9  # 7 unique + 2 repeats, stored once each
+    assert len(client.get("/api/markets?category=Sports").json()) == 2

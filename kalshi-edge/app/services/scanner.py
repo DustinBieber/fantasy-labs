@@ -40,6 +40,8 @@ def store_markets(parsed: List[Dict[str, Any]], pull_id: Optional[int], kind: st
     """Upsert current market state and append snapshots. Returns snapshots written."""
     if not parsed:
         return 0
+    # The same market can appear twice in one batch (overlapping pages); keep the last copy.
+    parsed = list({m["ticker"]: m for m in parsed if m.get("ticker")}.values())
     settings = get_settings()
     ts = now_ts()
     tickers = [m["ticker"] for m in parsed if m.get("ticker")]

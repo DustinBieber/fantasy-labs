@@ -32,7 +32,8 @@ def main() -> int:
     print(f"Kalshi Edge live smoke test · {hst(now_ts())}")
     print(f"Kalshi API: {config.KALSHI_API_BASE}")
     print(f"Database: {config.DATABASE_URL}\n")
-    order = ["kalshi_series", "kalshi_active", "espn_nfl", "odds_api", "aaa", "gas_backfill", "settle"]
+    order = ["kalshi_series", "kalshi_active", "espn_nfl", "odds_api", "aaa", "gas_backfill", "follow_discover",
+             "follow_picks", "settle"]
     if not args.skip_scan:
         order.insert(0, "kalshi_scan")
     results = {}
@@ -87,6 +88,23 @@ def main() -> int:
     if sc.get("brier"):
         print(f"  Brier by model weight (lower is better): {sc['brier']}")
 
+    from app.services import follow_service, parlay_service
+    fol = follow_service.feed(nfl)
+    print(f"\nFollowed bettors: {fol['proven_count']} proven of {len(fol['wallets'])} graded")
+    for w in fol["wallets"][:8]:
+        st = w["stats"]
+        print(f"  {'PROVEN ' if w['proven'] else 'context'} {w['name'][:18]:<18} {w['short']}  NFL {st.get('nfl_picks', 0)} picks, "
+              f"{st.get('wins', 0)}-{st.get('losses', 0)}, ${st.get('pnl', 0):,.0f}, {st.get('units', 0):+.1f}u"
+              + (f"  ({st['why_not']})" if st.get("why_not") else ""))
+    for p in fol["picks"][:8]:
+        print(f"  pick: {p['name'][:14]:<14} {p['label']:<40} ${p['size_usd'] or 0:,.0f}  -> {p['verdict']}")
+    par = parlay_service.board()
+    print(f"\nParlays: {len(par['tickets'])} tickets from {len(par['pool'])} +EV legs")
+    for t in par["tickets"][:5]:
+        print(f"  [{t['tier']}] {' + '.join(g['label'] for g in t['legs'])}: fair {100 * t['fair']:.1f}%, est quote "
+              f"{100 * t['est_quote']:.1f}c, accept up to {('%.1fc' % (100 * t['max_price'])) if t['max_price'] else 'none'}, "
+              f"net EV {t['net_ev_pct']:+.1f}%")
+
     print("\nSeries fee types from Kalshi:")
     for r in db.fetch_all(select(db.series)):
         print(f"  {r['series_ticker']:<14} fee_type={r['fee_type']} multiplier={r['fee_multiplier']}")
@@ -117,6 +135,15 @@ def main() -> int:
          "AAA blocked the scraper: enter the value by hand on Commodities & Econ (or rely on Kalshi settlements)."),
         ("ESPN odds parsed", isinstance(espn_res, dict) and espn_res.get("with_moneyline", 0) > 0,
          "ESPN returned no moneylines (normal if no upcoming games have odds); use manual lines or ODDS_API_KEY."),
+        ("Polymarket leaderboard read (bettor discovery)", "error" not in results.get("follow_discover", {"error": 1})
+         and results.get("follow_discover", {}).get("candidates", 0) > 0,
+         f"Result: {results.get('follow_discover')}. Polymarket may have changed its Data API; send me this line."),
+        ("Bettors graded on NFL records", results.get("follow_discover", {}).get("graded", 0) > 0,
+         "No leaderboard wallet had resolved NFL positions, or closed-positions parsing failed."),
+        ("At least one proven bettor (200+ NFL picks, positive units)", fol["proven_count"] > 0,
+         "None passed your proof rule yet. That's fine; they just don't get pick weight."),
+        ("Followed picks mapped to Kalshi tickers", "error" not in results.get("follow_picks", {"error": 1}),
+         f"Result: {results.get('follow_picks')}"),
         ("The Odds API on", "skipped" not in results.get("odds_api", {}),
          "Optional: add ODDS_API_KEY to .env for sharp-book (Pinnacle) fair prices."),
     ]

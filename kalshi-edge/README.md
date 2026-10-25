@@ -71,7 +71,7 @@ database instead.
 ```
 ./start.sh test
 ```
-There are 77 tests:
+There are 88 tests:
 - fee math (fee types, event overrides, $0.0001 rounding), devig math, Kelly sizing, tier logic;
 - the maker price on Kalshi's price grid, and sharp-book fair prices;
 - gas ladder calibration, implied median, the trap rule, the model, the no-look-ahead history, and the
@@ -79,7 +79,10 @@ There are 77 tests:
 - parsers for each source in Kalshi's current format (`*_dollars`, `*_fp`, `price_ranges`,
   `settlement_value_dollars`, historical candles);
 - an end-to-end test of scan, snapshots, NFL edges, gas with the historical archive, paper fill,
-  settlement, CSV export, and stale-data handling, run against a mocked Kalshi API in its current format.
+  settlement, CSV export, and stale-data handling, run against a mocked Kalshi API in its current format;
+- bettor grading (proof rule, market-maker filter, full season), Polymarket v1/v2 parsing, parlay math
+  (max price, leg rules, payouts on losses and ties), and an end-to-end run that grades three bettors,
+  follows the proven one, builds parlays, and logs and settles one.
 
 ## What's on screen
 
@@ -88,6 +91,8 @@ There are 77 tests:
 | Top bar | Bankroll, open exposure, today's P&L, and unrealized P&L. One freshness chip per source; a chip turns red with the last good time when its data is stale or failing. |
 | Top Edges | Props first (rated in Phase 2), then NFL game winners, then the AAA gas ladder. Tier badges. Tap a row to see the reason in plain English, the full math, sources with pull IDs, a 24-hour chart, and the trade form. |
 | Sports | One card per NFL game: Kalshi bid/ask, fair price, 1-hour and 24-hour moves, sparklines, ESPN context, and manual line entry. |
+| Parlays | Multi-game NFL parlay tickets (Kalshi Combos) built only from +EV legs. Each has the legs, fair %, estimated quote, max quote to accept, size, step-by-step setup for Kalshi's combo builder, a quote checker, and a log form. |
+| Follow | Bettors graded from their public Polymarket NFL record. Proven ones (your proof rule) are followed: their open NFL game picks are mapped to Kalshi, compared with our fair price, and graded when the game settles. |
 | Commodities & Econ | The deceleration-trap warning, AAA trends over 1/3/7/14 days, every open gas ladder (Kalshi vs model vs fair, implied median), and median calibration against actual AAA prints. |
 | Markets & History | Every open market by board. Search, sort, a price and volume history chart, and a ★ to watch a ticker (1-minute snapshots). |
 | Trades | Paper and real trade log, open positions, resting maker orders, P&L by tier, closing line value, correlated-exposure warnings, and CSV export. |
@@ -95,6 +100,47 @@ There are 77 tests:
 | Audit | Every data job and every HTTP pull, with time (HST), status, rows, and errors. Any price on screen links to the pull it came from. |
 
 All times are Pacific/Honolulu.
+
+## Parlays and following proven bettors
+
+### Parlays (Kalshi Combos)
+- Kalshi calls parlays **Combos**. A combo pays $1 only if every leg wins. You build it in the Kalshi app,
+  and a market maker quotes the price. Requesting and accepting quotes needs a logged-in account, so this
+  app never does either. It tells you exactly what to build and what price to accept.
+- **Legs:** only legs where our fair price (sharp or consensus devig) beats the Kalshi ask, one per game.
+  A parlay of fair-priced legs is not +EV, just higher variance.
+- **Multi-game only:** legs from different games are independent, so fair = the product of the leg fair
+  prices. Same-game legs are correlated and are left out until a correlation model exists.
+- **What each ticket shows:**
+  - our estimate of the quote, which is the product of the leg asks;
+  - the **max quote to accept**: the highest price where net EV after the taker fee is still at least 10%
+    (editable);
+  - the tier under your usual rules. G needs a proven bettor agreeing on every leg.
+- **Sizing:** quarter Kelly with your caps. Each leg's game counts toward that game's 8% correlated cap.
+- **Logging and settlement:** log the parlay at the exact quote you got. It settles as the product of the
+  legs' settlement values: $0 as soon as any leg loses, and a $0.50 tie leg halves the payout.
+
+### Following proven bettors
+Kalshi trades are anonymous, and Kalshi's social profiles have no public API. Polymarket's records are
+public and on-chain, so the app grades bettors there:
+1. **Discover** (daily): wallets from Polymarket's sports leaderboard (all-time and month).
+2. **Grade:** each wallet's *resolved NFL positions only*: picks, W-L, profit, units (profit ÷ average
+   stake), ROI, and seasons covered. Pick weight follows your proof rule: **200+ NFL picks or a full
+   season, with positive units**. Proof never transfers from other sports.
+3. **Exclude market makers:** wallets that held both sides of the same game in more than 30% of markets look
+   like market makers, not bettors, and stay context only. A warning shows when three bets produced most of
+   the profit.
+4. **Follow** (every 15 minutes): proven wallets' open NFL game-winner positions ($200 and up) are mapped to
+   the matching Kalshi market and become expert picks.
+   - Tier G needs proven agreement, and a proven bettor on the other side forces Pass.
+   - Positions they exit stop counting.
+5. **Grade them ourselves:** when a game settles, each followed pick is graded. Our own rolling grade
+   turns on after 50 picks.
+6. **Never chase:** each pick shows the Kalshi price next to our fair price. If Kalshi has already moved
+   past fair, the row says "don't chase."
+7. **Add your own:** you can grade any specific Polymarket wallet on the Follow tab.
+
+Polymarket is used only as public data. The app never routes you there.
 
 ## The rules as coded
 
@@ -208,9 +254,9 @@ app/main.py              FastAPI app; starts the scheduler
 app/api.py               JSON API used by the dashboard
 app/config.py            .env loading and every editable default (fees, tiers, caps, intervals)
 app/db.py                SQLAlchemy Core schema (SQLite now, Postgres by changing DATABASE_URL)
-app/sources/             kalshi.py, espn.py, odds_api.py, aaa.py, http.py (retries, rate limits, pull log)
-app/engine/              fees, devig, kelly, tiers, maker, edge, gas, experts, teams (pure math, fully tested)
-app/services/            scanner, nfl_service, gas_service, portfolio, edges, jobs (scheduler + freshness)
+app/sources/             kalshi.py, polymarket.py, espn.py, odds_api.py, aaa.py, http.py (retries, rate limits, pull log)
+app/engine/              fees, devig, kelly, tiers, maker, edge, gas, parlay, follow, experts, teams (pure math, tested)
+app/services/            scanner, nfl_service, parlay_service, follow_service, gas_service, portfolio, edges, jobs
 static/                  index.html, app.js, app.css (compiled Tailwind), vendor/chart.umd.js
 frontend/                Tailwind source and config (only needed if you change the dashboard's classes)
 scripts/smoke_live.py    live-data proof

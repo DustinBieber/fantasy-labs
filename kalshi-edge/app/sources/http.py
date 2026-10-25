@@ -22,7 +22,7 @@ _rate_lock = threading.Lock()
 _last_call: Dict[str, float] = {}
 
 # Minimum seconds between calls per source (Kalshi basic tier allows ~20 reads/sec).
-MIN_INTERVAL = {"kalshi": 0.12, "espn": 0.5, "odds_api": 1.0, "aaa": 2.0}
+MIN_INTERVAL = {"kalshi": 0.12, "espn": 0.5, "odds_api": 1.0, "aaa": 2.0, "polymarket": 0.25}
 
 
 class FetchError(Exception):

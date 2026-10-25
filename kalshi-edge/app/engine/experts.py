@@ -61,7 +61,8 @@ def expert_status(
     agree, disagree = [], []
     for p in picks:
         e = eligible.get(p["expert_id"])
-        if not e or p.get("result"):
+        # Graded picks are history, and a position the bettor already exited is no longer a pick.
+        if not e or p.get("result") or p.get("status") == "closed":
             continue
         got = normalize_outcome(p["ticker"], p["side"], event_pair)
         if got == want:

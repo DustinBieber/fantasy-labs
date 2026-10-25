@@ -3,7 +3,8 @@
 
 const COLORS = { kalshi: '#3987e5', fair: '#d95926', neutral: '#8b919a', grid: '#24272c', text: '#b4b9c0' };
 const TABS = [
-  ['edges', 'Top Edges'], ['sports', 'Sports'], ['econ', 'Commodities & Econ'], ['news', 'News'],
+  ['edges', 'Top Edges'], ['sports', 'Sports'], ['parlays', 'Parlays'], ['follow', 'Follow'],
+  ['econ', 'Commodities & Econ'], ['news', 'News'],
   ['flow', 'Flow'], ['markets', 'Markets & History'], ['trades', 'Trades'], ['settings', 'Settings'], ['audit', 'Audit'],
 ];
 const S = { tab: 'edges', status: null, edges: null, nfl: null, gas: null, settings: null, experts: null,
@@ -118,7 +119,7 @@ const STATE_STYLE = {
   error: 'border-red-600 bg-red-950 text-red-200 font-semibold', never: 'border-ink-700 text-ink-500', off: 'border-ink-800 text-ink-500',
 };
 const DOT = { ok: 'bg-emerald-500', stale: 'bg-red-500', error: 'bg-red-500', never: 'bg-ink-600', off: 'bg-ink-700' };
-const SHORT = { kalshi_scan: 'Kalshi scan', kalshi_active: 'Kalshi 1-min', espn_nfl: 'ESPN', odds_api: 'Odds API', aaa: 'AAA' };
+const SHORT = { kalshi_scan: 'Kalshi scan', kalshi_active: 'Kalshi 1-min', espn_nfl: 'ESPN', odds_api: 'Odds API', aaa: 'AAA', follow_picks: 'Followed picks' };
 function freshText(f) {
   if (f.state === 'ok') return `${f.age_min < 1 ? 'now' : Math.round(f.age_min) + 'm ago'}`;
   if (f.state === 'stale') return `STALE · last good ${f.last_ok_ts ? hstTime(f.last_ok_ts) : '—'}`;
@@ -493,6 +494,145 @@ function bindEcon(root) {
   });
 }
 
+
+/* ---------- Parlays (Kalshi Combos) ---------- */
+const netEv = (fair, p, rate) => { const f = rate * p * (1 - p); return 100 * (fair - p - f) / (p + f); };
+function viewParlays() {
+  const d = S.parlays;
+  if (!d) return loading();
+  const pool = (d.pool || []).map((g) => `<tr class="border-t border-ink-800"><td class="py-1.5 pr-3">${esc(g.label)}</td>
+      <td class="pr-3 text-xs text-ink-400">${esc(g.game || '')}</td><td class="pr-3 tabular-nums text-orange-300">${pct(g.fair)}</td>
+      <td class="pr-3 tabular-nums">${cents(g.ask)}</td><td class="pr-3 tabular-nums text-emerald-400">${signed(g.leg_edge_pts, 1, ' pts')}</td>
+      <td class="text-xs ${g.expert === 'agree' ? 'text-emerald-300' : 'text-ink-500'}">${g.expert === 'agree' ? 'proven bettor agrees' : '—'}</td></tr>`).join('');
+  const tickets = d.tickets.map((t) => parlayRow(t)).join('');
+  const combos = (d.combos || []).map((c) => `<tr class="border-t border-ink-800"><td class="py-1.5 pr-3 text-xs">${esc(c.created_hst)}</td>
+      <td class="pr-3 text-xs">${c.mode} · ${c.status}${c.settlement_result ? ' (' + esc(c.settlement_result) + ')' : ''}</td>
+      <td class="pr-3">${esc(c.title)}</td><td class="pr-3 tabular-nums">${c.contracts} @ ${cents(c.limit_price)}</td>
+      <td class="tabular-nums ${pnlClass(c.realized_pnl)}">${c.realized_pnl != null ? money(c.realized_pnl) : '—'}</td></tr>`).join('');
+  return `<div class="grid grid-cols-1 gap-4">
+    ${card(`${h2('NFL parlays (Kalshi Combos)', `${d.legs_considered} game-winner legs priced · ${(d.pool || []).length} are +EV on their own`)}
+      <div class="text-sm text-ink-300 space-y-1">
+        <p>Every ticket uses only legs where our fair price beats the Kalshi ask. A parlay of fair-priced legs isn't +EV, just higher variance. ${esc(d.note)}</p>
+        <p>Kalshi prices each combo by market-maker quote after you build it in the app. Each ticket gives the legs, our fair price, our estimate of the quote, and the <b>highest quote worth accepting</b> (net EV ≥ ${d.min_net_ev_pct}% after fees). This app never places bets.</p>
+      </div>`)}
+    <div>${tickets || card(`<div class="text-sm text-ink-400">${(d.pool || []).length < 2 ? 'Fewer than two +EV legs right now, so no parlay is worth building. Legs need a fair price (Odds API key, a manual line, or ESPN) and a Kalshi ask below it.' : 'No ticket clears the rules right now.'}</div>`)}</div>
+    ${card(`${h2('Leg pool', 'best +EV leg per game, ranked by fair ÷ ask')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[620px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Leg</th><th class="pr-3">Game</th><th class="pr-3">Fair</th><th class="pr-3">Kalshi ask</th><th class="pr-3">Leg edge</th><th>Followed bettors</th></tr></thead><tbody>${pool || '<tr><td colspan="6" class="py-3 text-ink-500">No +EV legs right now.</td></tr>'}</tbody></table></div>`)}
+    ${combos ? card(`${h2('Your parlays')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[640px]"><tbody>${combos}</tbody></table></div>`) : ''}
+  </div>`;
+}
+function parlayRow(t) {
+  const k = 'parlay|' + t.id;
+  const open = S.open.has(k);
+  const sz = t.size || {};
+  const metric = (label, val, cls = '') => `<div class="text-right min-w-[4.2rem]"><div class="text-[10px] uppercase tracking-wider text-ink-500">${label}</div><div class="tabular-nums text-sm ${cls}">${val}</div></div>`;
+  const title = t.legs.map((g) => esc(g.label.replace(' to win', ''))).join(' + ');
+  return `<div class="border border-ink-800 rounded-lg bg-ink-900 mb-2 ${t.tier === 'S' ? 'border-l-4 border-l-red-600' : ''}">
+    <button class="w-full text-left px-3 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2" data-toggle="${esc(k)}">
+      ${tierBadge(t.tier)}
+      <div class="min-w-0 grow basis-56"><div class="font-medium">${t.n_legs}-leg: ${title}</div>
+        <div class="text-xs text-ink-400">pays ${esc(t.pays || '—')} · ${t.expert === 'agree' ? '<span class="text-emerald-300">proven bettors on every leg</span>' : 'not every leg has proven agreement'}</div></div>
+      <div class="flex flex-wrap gap-x-3 gap-y-1">
+        ${metric('Fair', pct(t.fair))}${metric('Est. quote', cents(t.est_quote))}
+        ${metric('Max price', t.max_price != null ? cents(t.max_price) : 'none', 'text-amber-300 font-semibold')}
+        ${metric('Edge', signed(t.edge_pts, 1, ' pts'), t.edge_pts > 0 ? 'text-emerald-400' : '')}
+        ${metric('Net EV', signed(t.net_ev_pct, 1, '%'), t.net_ev_pct > 0 ? 'text-emerald-400 font-semibold' : '')}
+        ${metric('Size', sz.contracts ? `${sz.contracts} · ${money(sz.dollars)}` : '0', sz.contracts ? '' : 'text-ink-500')}
+        ${metric('Max loss', sz.contracts ? money(sz.max_loss) : '—')}
+      </div></button>
+    ${open ? `<div class="border-t border-ink-800 px-3 py-3 grid gap-4 lg:grid-cols-2">
+      <div class="space-y-3">
+        <div><div class="text-[11px] uppercase tracking-wider text-ink-400 mb-1">Set it up on Kalshi</div>
+          <ol class="list-decimal ml-5 space-y-1 text-sm">${t.setup.map((x) => `<li>${esc(x)}</li>`).join('')}</ol></div>
+        <div><div class="text-[11px] uppercase tracking-wider text-ink-400 mb-1">The full math</div>
+          <ol class="list-decimal ml-5 space-y-0.5 font-mono text-[12px] text-ink-200">${t.math.map((x) => `<li>${esc(x)}</li>`).join('')}</ol></div>
+      </div>
+      <div class="space-y-3">
+        <div class="bg-ink-950/60 border border-ink-800 rounded-lg p-3">
+          <div class="text-[11px] uppercase tracking-wider text-ink-400 mb-2">Check the quote Kalshi gives you</div>
+          <div class="flex flex-wrap items-center gap-2"><input type="number" step="0.1" min="0.1" max="99" class="${inputCls} max-w-[8rem] quote-in" data-fair="${t.fair}" data-rate="${t.fee_rate}" data-max="${t.max_price ?? ''}" placeholder="quote ¢">
+            <span class="text-sm quote-out text-ink-300">Enter the quote in cents.</span></div></div>
+        <form class="combo-form grid grid-cols-2 sm:grid-cols-4 gap-2 bg-ink-950/60 border border-ink-800 rounded-lg p-3" data-legs='${esc(JSON.stringify(t.legs.map((g) => ({ ticker: g.ticker, side: 'yes', label: g.label }))))}'>
+          <div class="col-span-2 sm:col-span-4 text-[11px] uppercase tracking-wider text-ink-400">Log this parlay (paper by default)</div>
+          <label class="text-xs text-ink-400">Mode<select name="mode" class="${inputCls}"><option value="paper">Paper</option><option value="real">Real (I placed it)</option></select></label>
+          <label class="text-xs text-ink-400">Quote you got ($)<input name="limit_price" type="number" step="0.0001" min="0.0001" max="0.9999" value="${t.est_quote}" class="${inputCls}"></label>
+          <label class="text-xs text-ink-400">Contracts<input name="contracts" type="number" min="1" value="${sz.contracts || 1}" class="${inputCls}"></label>
+          <label class="text-xs text-ink-400">Tier<select name="tier" class="${inputCls}">${['S', 'G', 'W', 'P'].map((x) => `<option ${x === t.tier ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+          <input type="hidden" name="fair_at_entry" value="${t.fair}"><input type="hidden" name="edge_at_entry" value="${t.edge_pts}">
+          <div class="col-span-2 sm:col-span-4"><button class="${btnPrimary}" type="submit">Log parlay</button></div>
+        </form>
+      </div></div>` : ''}
+  </div>`;
+}
+function bindParlays(root) {
+  bindEdgeRows(root);
+  $$('.quote-in', root).forEach((inp) => inp.addEventListener('input', () => {
+    const q = parseFloat(inp.value) / 100; const out = inp.parentElement.querySelector('.quote-out');
+    if (!(q > 0 && q < 1)) { out.textContent = 'Enter the quote in cents.'; return; }
+    const ev = netEv(parseFloat(inp.dataset.fair), q, parseFloat(inp.dataset.rate));
+    const max = parseFloat(inp.dataset.max);
+    const ok = !isNaN(max) && q <= max + 1e-9;
+    out.innerHTML = `Net EV at ${cents(q)}: <b class="${ev > 0 ? 'text-emerald-400' : 'text-red-400'}">${signed(ev, 1, '%')}</b> · ${ok ? '<span class="text-emerald-300 font-semibold">within your max: OK to accept</span>' : '<span class="text-red-300 font-semibold">above your max: decline</span>'}`;
+  }));
+  $$('.combo-form', root).forEach((form) => form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const body = { mode: f.get('mode'), combo_legs: JSON.parse(form.dataset.legs), limit_price: parseFloat(f.get('limit_price')),
+      contracts: parseInt(f.get('contracts'), 10), tier: f.get('tier'), fair_at_entry: parseFloat(f.get('fair_at_entry')), edge_at_entry: parseFloat(f.get('edge_at_entry')) };
+    if (body.mode === 'real' && !confirm(`Log a REAL parlay you already placed on Kalshi at ${cents(body.limit_price)} x ${body.contracts}? Nothing is sent to Kalshi.`)) return;
+    try { const t = await post('/trades', body); toast(`Logged ${t.mode} parlay #${t.id} at ${cents(t.limit_price)}.`); await loadTab(true); refreshStatus(); } catch (err) { toast(err.message, true); }
+  }));
+}
+
+/* ---------- Follow proven bettors ---------- */
+function viewFollow() {
+  const d = S.follow;
+  if (!d) return loading();
+  const picks = d.picks.map((p) => `<tr class="border-t border-ink-800 align-top">
+      <td class="py-1.5 pr-3"><div class="font-medium">${esc(p.name)}</div><div class="text-xs ${p.proven ? 'text-emerald-300' : 'text-ink-500'}">${p.proven ? 'proven' : 'context only'} · ${esc(p.short)}</div></td>
+      <td class="pr-3">${esc(p.label)}<div class="text-[11px] text-ink-500 font-mono">${esc(p.ticker)}</div></td>
+      <td class="pr-3 tabular-nums">${cents(p.their_price)}</td><td class="pr-3 tabular-nums">${money(p.size_usd)}</td>
+      <td class="pr-3 tabular-nums">${cents(p.kalshi_bid)} / ${cents(p.kalshi_ask)}</td>
+      <td class="pr-3 tabular-nums text-orange-300">${p.fair != null ? pct(p.fair) : '—'}</td>
+      <td class="pr-3">${p.tier ? tierBadge(p.tier) : ''}</td>
+      <td class="text-xs">${esc(p.verdict)}<div class="text-[11px] text-ink-500">seen ${esc(p.first_seen_hst || '')}</div></td></tr>`).join('');
+  const wallets = d.wallets.map((w) => {
+    const st = w.stats || {};
+    return `<tr class="border-t border-ink-800 align-top">
+      <td class="py-1.5 pr-3"><div class="font-medium">${esc(w.name)}</div><a class="text-xs underline decoration-dotted text-ink-400" target="_blank" rel="noopener" href="${esc(w.profile)}">${esc(w.short)}</a></td>
+      <td class="pr-3"><span class="font-bold ${w.proven ? 'text-emerald-300' : 'text-ink-400'}">${w.proven ? 'Proven' : 'Context'}</span></td>
+      <td class="pr-3 tabular-nums">${st.nfl_picks ?? 0}</td><td class="pr-3 tabular-nums">${st.wins ?? 0}-${st.losses ?? 0}${st.win_pct != null ? ` (${st.win_pct}%)` : ''}</td>
+      <td class="pr-3 tabular-nums ${pnlClass(st.pnl)}">${money(st.pnl)}</td><td class="pr-3 tabular-nums">${signed(st.units, 1, 'u')}</td>
+      <td class="pr-3 tabular-nums">${st.roi_pct != null ? signed(st.roi_pct, 1, '%') : '—'}</td>
+      <td class="pr-3 text-xs">${w.rolling.active ? `${w.rolling.wins}-${w.rolling.losses}, ${w.rolling.units}u` : `${w.rolling.graded}/50 graded`}</td>
+      <td class="text-xs text-ink-400 max-w-[20rem]">${esc(st.why_not || w.why)}</td></tr>`;
+  }).join('');
+  const cons = (d.consensus || []).map((c) => `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-emerald-700 text-emerald-200 text-xs">${esc(c.label)} · ${c.wallets} proven · ${money(c.usd)}</span>`).join(' ');
+  return `<div class="grid grid-cols-1 gap-4">
+    ${card(`${h2('Follow proven bettors', `${d.proven_count} proven of ${d.wallets.length} graded`)}
+      <div class="text-sm text-ink-300 space-y-1">
+        <p>Bettors are graded by this app from their public Polymarket record (on-chain, resolved NFL positions only). Pick weight requires your proof rule: <b>200+ NFL picks or a full season, with positive units</b>. Hot streaks, small samples, and market makers (both sides of the same game) stay context only.</p>
+        <p>Their open NFL game-winner positions show up here, mapped to the Kalshi market. A proven bettor on your side is what Tier G needs; one on the other side forces Pass. Following is a signal, not a reason to chase: if Kalshi already trades at or above our fair price, the row says so.</p>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2"><button class="${btn}" data-run-job="follow_discover">Grade bettors now</button><button class="${btn}" data-run-job="follow_picks">Refresh their picks</button></div>
+      <form id="wallet-form" class="mt-3 flex flex-wrap gap-2"><input name="wallet" class="${inputCls} max-w-md font-mono" placeholder="0x… Polymarket wallet to grade"><input name="name" class="${inputCls} max-w-[12rem]" placeholder="name (optional)"><button class="${btn}">Grade this wallet</button></form>`)}
+    ${cons ? card(`${h2('Where proven bettors agree')}<div class="flex flex-wrap gap-2">${cons}</div>`) : ''}
+    ${card(`${h2('Their open NFL picks')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[900px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Bettor</th><th class="pr-3">Pick</th><th class="pr-3">Their price</th><th class="pr-3">Size</th><th class="pr-3">Kalshi bid/ask</th><th class="pr-3">Our fair</th><th class="pr-3">Tier</th><th>Verdict</th></tr></thead><tbody>${picks || '<tr><td colspan="8" class="py-3 text-ink-500">No open NFL picks from graded bettors right now.</td></tr>'}</tbody></table></div>`)}
+    ${card(`${h2('Graded bettors', 'NFL only; proof never transfers across sports')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[960px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Bettor</th><th class="pr-3">Status</th><th class="pr-3">NFL picks</th><th class="pr-3">W-L</th><th class="pr-3">Profit</th><th class="pr-3">Units</th><th class="pr-3">ROI</th><th class="pr-3">Our grade</th><th>Notes</th></tr></thead><tbody>${wallets || '<tr><td colspan="9" class="py-3 text-ink-500">Nobody graded yet. Press "Grade bettors now".</td></tr>'}</tbody></table></div>`)}
+  </div>`;
+}
+function bindFollow(root) {
+  $$('[data-run-job]', root).forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true; const label = b.textContent; b.textContent = 'Working…';
+    try { const r = await post(`/jobs/${b.dataset.runJob}/run`); toast(r.error ? `Failed: ${r.error}` : `Done: ${JSON.stringify(r).slice(0, 140)}`, !!r.error); } catch (e) { toast(e.message, true); }
+    b.textContent = label; b.disabled = false; await loadTab(true);
+  }));
+  $('#wallet-form', root)?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try { const r = await post('/follow/wallet', { wallet: f.get('wallet'), name: f.get('name') || null }); toast(r.eligible ? 'Proven: this wallet now counts.' : `Graded, context only: ${r.why_not}`); await loadTab(true); } catch (err) { toast(err.message, true); }
+  });
+}
+
 /* ---------- Boards 4 & 5 (Phase 2) ---------- */
 const viewNews = () => phaseNote('<b>News Movers</b> arrives in Phase 2: approved RSS feeds, GDELT, and official sources, deduplicated, each story linked to the tickers it could move with price before/after, Hawaii time, and a link confidence (weak links labeled weak). Add the feeds you approve under Settings now.');
 const viewFlow = () => phaseNote('<b>Flow and Big Trades tape</b> arrives in Phase 2: Kalshi trades endpoint and order book, large trades by dollar size and percentile, volume and open interest spikes, book imbalance, and unexplained moves. Polymarket whale activity shown as context only.');
@@ -635,6 +775,7 @@ const SETTING_FIELDS = [
   ['Tier gates', [['tiers.s_min_edge_pts', 'S: edge above (pts)'], ['tiers.s_min_net_ev_pct', 'S: net EV above (%)'], ['tiers.g_min_edge_pts', 'G: edge at least (pts)'], ['tiers.g_min_net_ev_pct', 'G: net EV at least (%)'], ['tiers.g_size_multiplier', 'G size multiplier'], ['tiers.w_min_edge_pts', 'Watch: edge at least (pts)']]],
   ['Kalshi fees', [['fees.taker_rate', 'Taker rate'], ['fees.maker_rate', 'Maker rate when a series fee type is unknown'], ['fees.rounding_precision', 'Fee rounding ($0.0001 direct member, 0.01 non-direct)'], ['fees.index_taker_rate', 'Index market taker rate'], ['fees.assume_maker_fee_when_unknown', 'Assume maker fee when series fee type unknown (true/false)']]],
   ['Gas model', [['gas.model_weight', 'Model weight vs Kalshi ladder probability (0-1)'], ['gas.drift_weight', 'Drift weight on last 3 daily changes'], ['gas.min_history_days', 'Minimum AAA daily changes before rating'], ['gas.sigma_floor', 'Daily sigma floor ($)'], ['gas.calibration_horizon_hours', 'Calibration: hours before close'], ['gas.min_graded_days', 'Graded days the model needs before rating above Watch']]],
+  ['Following and parlays', [['follow.min_proof_picks', 'Proof rule: minimum graded NFL picks'], ['follow.full_season_weeks', 'Proof rule: weeks that count as a full season'], ['follow.min_position_usd', 'Ignore followed positions smaller than ($)'], ['follow.max_hedge_share', 'Market-maker filter: max share of games with both sides'], ['follow.candidates_per_window', 'Leaderboard wallets to grade per window'], ['parlays.min_net_ev_pct', 'Parlay max price: net EV at least (%)'], ['parlays.max_legs', 'Parlay max legs'], ['parlays.candidate_legs', 'Parlay leg pool size']]],
   ['Staleness (minutes)', [['staleness_minutes.kalshi_scan', 'Kalshi price'], ['staleness_minutes.espn_nfl', 'ESPN line'], ['staleness_minutes.odds_api', 'Odds API lines'], ['staleness_minutes.manual_lines', 'Manual lines'], ['staleness_minutes.aaa', 'AAA']]],
 ];
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -739,6 +880,7 @@ function bindAudit(root) {
 const loading = () => '<div class="text-ink-400 text-sm py-10 text-center">Loading…</div>';
 const VIEWS = {
   edges: [viewEdges, bindEdgeRows], sports: [viewSports, (r) => { bindEdgeRows(r); bindSports(r); }],
+  parlays: [viewParlays, bindParlays], follow: [viewFollow, bindFollow],
   econ: [viewEcon, (r) => { bindEdgeRows(r); bindEcon(r); }], news: [viewNews, () => {}], flow: [viewFlow, () => {}],
   markets: [viewMarkets, bindMarkets], trades: [viewTrades, bindTrades], settings: [viewSettings, bindSettings], audit: [viewAudit, bindAudit],
 };
@@ -766,6 +908,8 @@ async function loadTab(force = false) {
     if (t === 'edges') S.edges = await api('/edges' + (force ? '?force=true' : ''));
     if (t === 'sports') S.nfl = await api('/nfl');
     if (t === 'econ') S.gas = await api('/gas');
+    if (t === 'parlays') S.parlays = await api('/parlays');
+    if (t === 'follow') S.follow = await api('/follow');
     if (t === 'markets') await loadMarkets();
     if (t === 'trades') await loadTrades();
     if (t === 'settings') { S.settings = await api('/settings'); S.experts = await api('/experts'); }

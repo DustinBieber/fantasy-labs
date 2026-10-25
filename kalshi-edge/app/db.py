@@ -191,6 +191,10 @@ experts = Table(
     Column("notes", Text),
     Column("active", Boolean, default=True),
     Column("created_ts", BigInteger),
+    Column("source", String(20), default="manual"),  # manual | polymarket
+    Column("wallet", String(64), index=True),
+    Column("stats", Text),  # JSON grading detail for wallets graded by the app
+    Column("graded_ts", BigInteger),
 )
 
 expert_picks = Table(
@@ -204,6 +208,12 @@ expert_picks = Table(
     Column("source_url", Text),
     Column("result", String(10)),  # win | loss | push | None
     Column("units", Float),
+    Column("status", String(10), default="open"),  # open | closed (position exited before settlement)
+    Column("size_usd", Float),
+    Column("first_seen_ts", BigInteger),
+    Column("last_seen_ts", BigInteger),
+    Column("external_ref", Text),  # e.g. Polymarket event slug + outcome
+    Column("label", Text),
 )
 
 trades = Table(
@@ -237,6 +247,7 @@ trades = Table(
     Column("closing_price", Float),
     Column("clv_pts", Float),
     Column("fill_note", Text),
+    Column("combo_legs", Text),  # JSON [{ticker, side, label}] for parlays (Kalshi Combos)
 )
 
 job_runs = Table(

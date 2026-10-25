@@ -27,6 +27,8 @@ ESPN_NFL_SCOREBOARD = _env(
     "ESPN_NFL_SCOREBOARD", "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 )
 AAA_URL = _env("AAA_URL", "https://gasprices.aaa.com/")
+# Public, read-only Polymarket data (on-chain records). Used only to grade and follow bettors; never to trade.
+POLYMARKET_DATA_API = _env("POLYMARKET_DATA_API", "https://data-api.polymarket.com").rstrip("/")
 APP_HOST = _env("APP_HOST", "0.0.0.0")
 APP_PORT = int(_env("APP_PORT", "8000") or 8000)
 SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -79,6 +81,7 @@ DEFAULT_SETTINGS = {
         "odds_api": 240,
         "aaa": 36 * 60,
         "manual_lines": 6 * 60,
+        "follow_picks": 60,
     },
     "intervals": {
         "full_scan_minutes": 10,
@@ -88,6 +91,8 @@ DEFAULT_SETTINGS = {
         "aaa_minutes": 60,
         "settle_minutes": 2,
         "edge_record_minutes": 5,
+        "follow_discover_hours": 24,
+        "follow_picks_minutes": 15,
     },
     "active_series": ["KXNFLGAME"],
     "top_volume_active_count": 40,
@@ -123,6 +128,31 @@ DEFAULT_SETTINGS = {
         # The model may rate gas bets above Watch only after beating Kalshi's own prices (Brier score)
         # over at least this many settled days.
         "min_graded_days": 10,
+    },
+    # Following proven bettors: Polymarket wallets graded by this app from their public NFL record.
+    "follow": {
+        "enabled": True,
+        "sport": "NFL",
+        "leaderboard_category": "SPORTS",
+        "leaderboard_windows": ["ALL", "MONTH"],
+        "candidates_per_window": 50,
+        "max_position_pages": 20,
+        # Your proof rule: 200+ graded picks (or a full season) in this exact sport, with positive units.
+        "min_proof_picks": 200,
+        "full_season_weeks": 15,
+        # Ignore positions smaller than this when following (noise, tests, dust).
+        "min_position_usd": 200,
+        # Wallets that hold both sides of the same game this often look like market makers: context only.
+        "max_hedge_share": 0.3,
+    },
+    # Parlays = Kalshi Combos. Multi-game only (same-game legs are correlated and not modeled yet).
+    "parlays": {
+        "min_legs": 2,
+        "max_legs": 4,
+        "candidate_legs": 12,
+        # The maximum quote to accept is the price where net EV after fees falls to this.
+        "min_net_ev_pct": 10.0,
+        "show": 12,
     },
     "news_feeds": [],
     # Heuristic: series tickers (KX prefix removed) matching this, or prop-like titles, go to the Props board.

@@ -13,7 +13,7 @@ from .. import config, db
 from ..settings_store import get_settings
 from ..sources import odds_api
 from ..timeutil import age_minutes, hst, now_ts
-from . import edges, gas_service, nfl_service, portfolio, scanner
+from . import edges, follow_service, gas_service, nfl_service, portfolio, scanner
 
 log = logging.getLogger("kalshi_edge.jobs")
 
@@ -22,6 +22,7 @@ def _settle_all() -> Dict[str, Any]:
     out = portfolio.process_fills()
     out.update(portfolio.settle_positions())
     out.update(gas_service.mark_from_snapshots())
+    out.update(follow_service.grade_picks())
     return out
 
 
@@ -35,6 +36,8 @@ JOBS: Dict[str, Dict[str, Any]] = {
                  "enabled": odds_api.enabled},
     "aaa": {"label": "AAA gas", "fn": gas_service.pull_aaa, "stale": "aaa"},
     "gas_backfill": {"label": "Gas settlements + calibration", "fn": gas_service.backfill, "stale": None},
+    "follow_discover": {"label": "Grade bettors (Polymarket)", "fn": follow_service.discover, "stale": None},
+    "follow_picks": {"label": "Followed bettors' picks", "fn": follow_service.refresh_picks, "stale": "follow_picks"},
     "settle": {"label": "Paper fills + settlement", "fn": _settle_all, "stale": None},
     "edge_record": {"label": "Edge history", "fn": edges.record, "stale": None},
 }
@@ -54,7 +57,7 @@ def run_job(name: str) -> Dict[str, Any]:
         db.upsert(db.job_runs, ["name"], {"name": name, "last_ok_ts": now_ts(), "last_rows": rows,
                                           "last_duration_ms": int((time.time() - start) * 1000),
                                           "detail": db.dumps(result)})
-        if name in ("kalshi_scan", "kalshi_active", "espn_nfl", "odds_api", "aaa"):
+        if name in ("kalshi_scan", "kalshi_active", "espn_nfl", "odds_api", "aaa", "follow_picks"):
             edges.compute(force=True)
         return result
     except Exception as e:  # noqa: BLE001 - every failure is recorded and shown, never swallowed
@@ -114,6 +117,8 @@ def start() -> Optional[BackgroundScheduler]:
     add("odds_api", minutes=iv["odds_api_minutes"], first=12)
     add("aaa", minutes=iv["aaa_minutes"], first=10)
     add("gas_backfill", hours=24, first=60)
+    add("follow_discover", hours=iv["follow_discover_hours"], first=120)
+    add("follow_picks", minutes=iv["follow_picks_minutes"], first=240)
     add("settle", minutes=iv["settle_minutes"], first=90)
     add("edge_record", minutes=iv["edge_record_minutes"], first=150)
     sch.start()

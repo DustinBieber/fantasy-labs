@@ -9,7 +9,7 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from . import db
 from .engine.experts import proof_grade, rolling_grade
-from .services import edges, gas_service, jobs, nfl_service, portfolio, scanner
+from .services import edges, follow_service, gas_service, jobs, nfl_service, parlay_service, portfolio, scanner
 from .services.categorize import CATEGORIES
 from .settings_store import get_settings, reset_settings, update_settings
 from .sources import odds_api
@@ -62,6 +62,29 @@ def nfl_line(payload: Dict[str, Any] = Body(...)):
         _bad(e)
     edges.compute(force=True)
     return row
+
+
+@router.get("/parlays")
+def parlays_board():
+    return parlay_service.board()
+
+
+@router.get("/follow")
+def follow_board():
+    return follow_service.feed()
+
+
+@router.post("/follow/wallet")
+def follow_wallet(payload: Dict[str, Any] = Body(...)):
+    """Grade one Polymarket wallet you want to follow (it only gets pick weight if it passes the proof rule)."""
+    try:
+        stats = follow_service.grade_wallet(str(payload.get("wallet", "")), payload.get("name"))
+    except ValueError as e:
+        _bad(e)
+    except Exception as e:  # noqa: BLE001 - surface source failures to the user
+        raise HTTPException(status_code=502, detail=f"Could not read that wallet: {e}")
+    edges.compute(force=True)
+    return stats
 
 
 @router.get("/gas")
