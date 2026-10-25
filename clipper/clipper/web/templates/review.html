@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Review{% endblock %}
+{% block content %}
+<h1>Review clips</h1>
+<form class="row" method="get" action="/review" style="margin:8px 0 18px">
+  <select name="status" aria-label="Status">
+    {% for s in ['ready','approved','rejected','failed','pending'] %}<option value="{{ s }}" {{ 'selected' if s == status }}>{{ s }}</option>{% endfor %}
+  </select>
+  <select name="client" aria-label="Creator">
+    <option value="">All creators</option>
+    {% for c in cfg.clients %}<option value="{{ c.slug }}" {{ 'selected' if c.slug == client }}>{{ c.name }}</option>{% endfor %}
+  </select>
+  <select name="show" aria-label="Show">
+    <option value="">All shows</option>
+    {% for c in cfg.clients %}{% for s in c.shows %}<option value="{{ s.slug }}" {{ 'selected' if s.slug == show }}>{{ s.name }}</option>{% endfor %}{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<div class="clips">
+{% for c in clips %}
+  {% set cl = cfg.client(c.client) %}
+  <article class="clip" id="clip-{{ c.id }}">
+    {% if c.file_path %}
+    {% set rel = c.file_path.split('/clips/')[-1] %}
+    <video src="/media/{{ rel }}" poster="/media/{{ rel[:-4] }}.jpg" controls preload="none" playsinline></video>
+    {% endif %}
+    <form class="body" method="post" action="/clips/{{ c.id }}/review">{{ csrf_input }}
+      <input type="hidden" name="next_url" value="/review?status={{ status }}&client={{ client }}&show={{ show }}">
+      <div class="row small">
+        <span class="tag signal">{{ c.score|int }}</span>
+        <span class="tag">{{ cl.show(c.show).name }}</span>
+        <span class="tag">{{ c.kind }}</span>
+        <span class="dim mono">{{ c.length|ts }} · from {{ c.start|ts }}</span>
+        {% if c.file_path %}<a class="small" href="/media/{{ c.file_path.split('/clips/')[-1] }}" download>Download</a>{% endif %}
+      </div>
+      <div class="hook" style="margin-top:8px">{{ c.hook }}</div>
+      <div class="dim small">{{ c.reason }} · <a href="{{ c.video_url }}&t={{ c.start|int }}s" target="_blank" rel="noopener">{{ c.video_title }}</a></div>
+      {% if cl.status != 'client' %}<div class="small" style="margin-top:6px"><span class="tag">{{ cl.status }}</span> sample only, nothing posts</div>{% endif %}
+      {% if c.error %}<div class="small lvl-error">{{ c.error }}</div>{% endif %}
+      <label for="h{{ c.id }}">Hook</label>
+      <input id="h{{ c.id }}" type="text" name="hook" value="{{ c.hook or '' }}" maxlength="60">
+      <label for="t{{ c.id }}">Title</label>
+      <input id="t{{ c.id }}" type="text" name="title" value="{{ c.title or '' }}" maxlength="95">
+      <label for="c{{ c.id }}">Caption</label>
+      <textarea id="c{{ c.id }}" name="caption">{{ c.caption or '' }}</textarea>
+      <label for="s{{ c.id }}">Post to</label>
+      <select id="s{{ c.id }}" name="show">
+        {% for s in cl.shows %}<option value="{{ s.slug }}" {{ 'selected' if s.slug == c.show }}>{{ s.name }}</option>{% endfor %}
+      </select>
+      <div class="small dim" style="margin-top:6px">{{ (c.hashtags|loads)|join(' ') }}</div>
+      {% for p in c.posts %}<div class="small"><span class="tag {{ 'gain' if p.status == 'posted' else ('loss' if p.status == 'failed' else '') }}">{{ p.platform }} {{ p.status }}</span> {{ p.scheduled_for|local }}</div>{% endfor %}
+      <div class="actions">
+        {% if c.status in ['ready', 'approved'] %}<button class="go" name="decision" value="approve">Approve</button>{% endif %}
+        <button class="no" name="decision" value="reject">Reject</button>
+        <button name="decision" value="save">Save</button>
+      </div>
+      {% if c.status == 'ready' %}<p class="small dim" style="margin-top:6px">Change the hook and tap Save to re-render the headline.</p>{% endif %}
+    </form>
+  </article>
+{% else %}
+  <p class="dim">No {{ status }} clips. New ones appear here after the worker processes an episode.</p>
+{% endfor %}
+</div>
+{% endblock %}

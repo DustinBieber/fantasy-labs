@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A1F1A">
+<title>{% block title %}Clipper{% endblock %} · Fantasy Labs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="bar"><div class="brand">FANTASY<span>LABS</span><small>CLIPPER</small></div></div>
+    {% block nav %}
+    <nav>
+      <a href="/" class="{{ 'on' if nav == 'index' }}">Overview</a>
+      <a href="/review" class="{{ 'on' if nav == 'review' }}">Review</a>
+      <a href="/posts" class="{{ 'on' if nav == 'posts' }}">Posts</a>
+      <a href="/videos" class="{{ 'on' if nav == 'videos' }}">Episodes</a>
+      <a href="/leads" class="{{ 'on' if nav == 'leads' }}">Leads</a>
+      <a href="/clients" class="{{ 'on' if nav == 'clients' }}">Creators</a>
+    </nav>
+    {% endblock %}
+  </div>
+</header>
+<main class="wrap">
+  {% if msg %}<div class="flash" role="status">{{ msg }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

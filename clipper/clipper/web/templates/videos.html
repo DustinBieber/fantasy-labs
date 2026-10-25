@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Episodes{% endblock %}
+{% block content %}
+<h1>Episodes</h1>
+<p class="lede">Every upload the worker has seen, and which show it was routed to. If an episode lands in the wrong show, change it here and tune the <span class="mono">match</span> patterns in config.yaml.</p>
+<form class="row" method="get" action="/videos" style="margin-bottom:14px">
+  <select name="client" aria-label="Creator"><option value="">All creators</option>
+    {% for c in cfg.clients %}<option value="{{ c.slug }}" {{ 'selected' if c.slug == client }}>{{ c.name }}</option>{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+<div class="card scroll">
+<table>
+  <thead><tr><th>Episode</th><th>Show</th><th>Status</th><th class="num">Clips</th><th></th></tr></thead>
+  <tbody>
+  {% for v in videos %}
+  {% set cl = cfg.client(v.client) %}
+  <tr>
+    <td class="wide"><a href="{{ v.url }}" target="_blank" rel="noopener">{{ v.title }}</a>
+      <div class="small dim mono">{{ v.duration|ts if v.duration else '' }} {{ v.transcript_source or '' }}</div>
+      {% if v.error %}<div class="small {{ 'lvl-error' if v.status == 'failed' else 'dim' }}">{{ v.error }}</div>{% endif %}</td>
+    <td>
+      <form method="post" action="/videos/{{ v.id }}/show" class="row">{{ csrf_input }}
+        <select name="show" aria-label="Show" onchange="this.form.submit()">
+          {% for s in cl.shows %}<option value="{{ s.slug }}" {{ 'selected' if s.slug == v.show }}>{{ s.name }}</option>{% endfor %}
+        </select>
+      </form>
+    </td>
+    <td><span class="tag {{ 'gain' if v.status == 'done' else ('loss' if v.status == 'failed' else '') }}">{{ v.status }}</span></td>
+    <td class="num">{{ v.clip_count }}</td>
+    <td class="row">
+      {% if v.status in ['skipped', 'failed', 'done'] %}<form method="post" action="/videos/{{ v.id }}/requeue">{{ csrf_input }}<button>{{ 'Process' if v.status == 'skipped' else 'Redo' }}</button></form>{% endif %}
+      {% if v.status in ['new', 'picked', 'failed'] %}<form method="post" action="/videos/{{ v.id }}/skip">{{ csrf_input }}<button class="no">Skip</button></form>{% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="dim">No episodes yet. The worker syncs creators every hour during work hours, or tap Run now on the Overview.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

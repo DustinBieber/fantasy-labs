@@ -1,0 +1,26 @@
+# Fantasy Labs side-hustle sandbox. Start/stop with ./sandbox.sh up / down.
+name: fantasy-labs-sandbox
+
+services:
+  clipper:
+    build:
+      context: ../clipper
+      args:
+        EXTRAS: ${CLIPPER_EXTRAS:-whisper}
+    image: fantasy-labs/clipper:local
+    restart: unless-stopped
+    environment:
+      CLIPPER_DATA: /data
+    volumes:
+      - ${SANDBOX_DATA:-${HOME}/sandbox-data}/clipper:/data
+    ports:
+      # Dashboard on the Mac mini only. Reach it remotely through Tailscale, not by opening this port.
+      - "127.0.0.1:8787:8787"
+    # Keep the sandbox from eating the whole machine.
+    cpus: ${CLIPPER_CPUS:-4}
+    mem_limit: ${CLIPPER_MEMORY:-6g}
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

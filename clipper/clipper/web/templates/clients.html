@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Creators{% endblock %}
+{% block content %}
+<h1>Creators</h1>
+<p class="lede">Creators come from <span class="mono">clients:</span> in config.yaml. A <b>prospect</b> gets sample clips only. Switch it to <b>client</b> once they've agreed and connected their accounts.</p>
+
+{% if not configured.values()|select|list %}
+<div class="flash">No posting apps are configured yet. Add the YouTube/TikTok/Instagram app keys to .env (see sandbox/README.md) before sending connect links.</div>
+{% endif %}
+
+{% for c in cfg.clients %}
+<section class="card" style="padding:16px;margin-bottom:16px">
+  <div class="row">
+    <div class="grow">
+      <h2 style="margin:0 0 4px;color:var(--chalk);font-size:16px;letter-spacing:0;text-transform:none">{{ c.name }}</h2>
+      <div class="small dim"><a href="{{ c.youtube }}" target="_blank" rel="noopener">{{ c.youtube }}</a> · {{ (stats.get(c.slug) or {}).get('done') or 0 }} of {{ (stats.get(c.slug) or {}).get('total') or 0 }} episodes processed</div>
+    </div>
+    <span class="tag {{ 'gain' if c.status == 'client' else 'signal' if c.status == 'prospect' else '' }}">{{ c.status }}</span>
+  </div>
+
+  <div class="grid2" style="margin-top:14px">
+  {% for s in c.shows %}
+    <div class="acct">
+      <h3>{{ s.name }}</h3>
+      <div class="small dim">{% if s.match %}titles matching {{ s.match|join(', ')|replace('\\b', '') }}{% else %}everything else{% endif %}</div>
+      {% if s.accounts %}<div class="small" style="margin-top:6px">Posts with the <b>{{ c.show(s.accounts).name }}</b> accounts</div>{% else %}
+      {% for p in c.posting.platforms %}
+        {% set a = accounts.get((c.slug, s.slug, p)) %}
+        <div class="p small"><span>{{ p }}</span>{% if a %}<span class="tag gain">{{ a.display_name }}</span>{% else %}<span class="dim">not connected</span>{% endif %}</div>
+      {% endfor %}{% endif %}
+    </div>
+  {% endfor %}
+  </div>
+
+  <div class="row" style="margin-top:14px">
+    {% if links.get(c.slug) %}
+    <input type="text" readonly value="{{ base }}/connect/{{ links[c.slug] }}" aria-label="Connect link" onclick="this.select()" style="flex:1;min-width:220px">
+    {% endif %}
+    <form method="post" action="/clients/{{ c.slug }}/connect-link">{{ csrf_input }}<button>{{ 'New link' if links.get(c.slug) else 'Create connect link' }}</button></form>
+  </div>
+  <p class="small dim" style="margin-top:6px">Send this link to the creator. They sign in to each platform themselves; you never see their passwords. Posting slots: {{ c.posting.slots|join(', ') }} {{ c.posting.timezone }}.</p>
+</section>
+{% endfor %}
+{% endblock %}
