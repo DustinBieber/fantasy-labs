@@ -18,6 +18,17 @@ def _net_ev_pct(fair: float, price: float, contracts: int, fee: float) -> float:
     return 100.0 * (contracts * fair - cost) / cost
 
 
+def px(p: float) -> str:
+    """Price in dollars with only the precision it has (0.56, 0.565, 0.5655)."""
+    t = f"{p:.4f}".rstrip("0")
+    return t + "0" * max(0, 2 - len(t.split(".")[1])) if "." in t else f"{p:.2f}"
+
+
+def cents(p: float) -> str:
+    c = round(100 * p, 2)
+    return (f"{c:.0f}" if abs(c - round(c)) < 1e-9 else f"{c:g}") + "¢"
+
+
 def side_label(market: Dict[str, Any], side: str) -> str:
     if side == "yes":
         return market.get("yes_sub_title") or "YES"
@@ -40,14 +51,20 @@ def evaluate(
     force_pass: Optional[str] = None,
     max_tier: Optional[str] = None,
     plain_subject: str = "",
+    *,
+    event_row: Optional[Dict[str, Any]] = None,
+    cap_reason: str = "",
 ) -> Dict[str, Any]:
     warnings = list(warnings or [])
     t = settings["tiers"]
     quotes = side_quotes(market.get("yes_bid"), market.get("yes_ask"), market.get("no_bid"), market.get("no_ask"))
     bid, ask = quotes[side]
     tick = market.get("tick_size") or 0.01
-    mp, maker_note = maker_price(bid, ask, tick, int(settings["maker"]["improve_ticks"]))
-    rates = fee_rates_for(market.get("series_ticker"), series_row, settings["fees"])
+    mp, maker_note = maker_price(bid, ask, tick, int(settings["maker"]["improve_ticks"]), market.get("price_ranges"))
+    rates = fee_rates_for(market.get("series_ticker"), series_row, settings["fees"], event_row)
+
+    def fee(contracts: int, price: float, rate: float) -> float:
+        return kalshi_fee(contracts, price, rate, rates.precision)
 
     base = {
         "ticker": market["ticker"],
@@ -68,7 +85,8 @@ def evaluate(
         "maker_price": mp,
         "maker_note": maker_note,
         "taker_price": ask,
-        "fee_rates": {"maker": rates.maker_rate, "taker": rates.taker_rate, "basis": rates.basis},
+        "fee_rates": {"maker": rates.maker_rate, "taker": rates.taker_rate, "basis": rates.basis,
+                      "precision": rates.precision},
         "price_ts": market.get("updated_ts"),
         "price_pull_id": market.get("pull_id"),
         "expert": {"status": expert_status, "note": expert_note},
@@ -92,7 +110,9 @@ def evaluate(
         if force_pass:
             return "P", force_pass
         if max_tier and TIER_ORDER[tier] < TIER_ORDER[max_tier]:
-            return max_tier, f"Capped at {max_tier}: " + why
+            label = {"W": "Watch", "G": "G", "P": "Pass"}.get(max_tier, max_tier)
+            return max_tier, (f"Capped at {label}{f' ({cap_reason})' if cap_reason else ''}. "
+                              f"On the numbers alone: {why}")
         return tier, why
 
     def size_for(tier):
@@ -101,7 +121,7 @@ def evaluate(
             q=fair, price=mp, fee_rate=rates.maker_rate, bankroll=bankroll,
             kelly_mult=float(settings["kelly_fraction"]), tier_mult=mult,
             per_strike_cap_pct=float(settings["per_strike_cap_pct"]),
-            correlated_room=corr_room, fee_fn=kalshi_fee,
+            correlated_room=corr_room, fee_fn=fee,
         )
 
     tier, why = tier_for(ev_unrounded)
@@ -117,26 +137,27 @@ def evaluate(
                 net_ev = _net_ev_pct(fair, mp, size["contracts"], size["fee"])
 
     # Reference fee/EV for a 100-contract maker order (shown when the recommended size is 0).
-    ref_fee = kalshi_fee(100, mp, rates.maker_rate)
+    ref_fee = fee(100, mp, rates.maker_rate)
     ref_ev = _net_ev_pct(fair, mp, 100, ref_fee)
     taker_ev = None
     if ask is not None and 0 < ask < 1:
-        tf = kalshi_fee(100, ask, rates.taker_rate)
+        tf = fee(100, ask, rates.taker_rate)
         taker_ev = round(_net_ev_pct(fair, ask, 100, tf), 2)
 
+    pm, pq = px(mp), px(1 - mp)
     if size["contracts"] > 0:
-        fee_line = (f"Fee = roundup({rates.maker_rate:g} x {size['contracts']} x {mp:.2f} x {1 - mp:.2f}) "
-                    f"= ${size['fee']:.2f}")
-        ev_line = (f"Net EV = ({size['contracts']} x {fair:.4f} - {size['contracts']} x {mp:.2f} - {size['fee']:.2f})"
-                   f" / ({size['contracts']} x {mp:.2f} + {size['fee']:.2f}) = {net_ev:.2f}%")
+        c = size["contracts"]
+        fee_line = (f"Fee = roundup({rates.maker_rate:g} x {c} x {pm} x {pq}, ${rates.precision:g}) = ${size['fee']:.4f}")
+        ev_line = (f"Net EV = ({c} x {fair:.4f} - {c} x {pm} - {size['fee']:.4f}) / ({c} x {pm} + {size['fee']:.4f})"
+                   f" = {net_ev:.2f}%")
     else:
-        fee_line = (f"Fee per contract = {rates.maker_rate:g} x {mp:.2f} x {1 - mp:.2f} = ${fee_pc:.4f} "
-                    f"(100 contracts: ${ref_fee:.2f}, rounded up per order)")
-        ev_line = f"Net EV = ({fair:.4f} - {mp:.2f} - {fee_pc:.4f}) / ({mp:.2f} + {fee_pc:.4f}) = {net_ev:.2f}%"
+        fee_line = (f"Fee per contract = {rates.maker_rate:g} x {pm} x {pq} = ${fee_pc:.4f} "
+                    f"(100 contracts: ${ref_fee:.4f}, rounded up per order)")
+        ev_line = f"Net EV = ({fair:.4f} - {pm} - {fee_pc:.4f}) / ({pm} + {fee_pc:.4f}) = {net_ev:.2f}%"
 
     math_lines = list(fair_info.get("steps", [])) + [
-        f"Maker price ({side.upper()}): {mp:.2f}. {maker_note}",
-        f"Raw edge = fair {fair:.4f} - maker {mp:.2f} = {raw_edge:.2f} pts",
+        f"Maker price ({side.upper()}): {pm}. {maker_note}",
+        f"Raw edge = fair {fair:.4f} - maker {pm} = {raw_edge:.2f} pts",
         f"Fee basis: maker rate {rates.maker_rate:g} ({rates.basis})",
         fee_line,
         ev_line,
@@ -144,7 +165,7 @@ def evaluate(
 
     subject = plain_subject or base["side_label"]
     reason = (f"{fair_info.get('plain', 'Our fair estimate')} puts {subject} at {100 * fair:.1f}%. "
-              f"You can rest a {side.upper()} bid at {100 * mp:.0f}¢, so the edge is {raw_edge:.1f} points; "
+              f"You can rest a {side.upper()} bid at {cents(mp)}, so the edge is {raw_edge:.1f} points; "
               f"after Kalshi fees you'd expect {net_ev:+.1f}% on the money risked. {why}")
     if size["contracts"] > 0:
         reason += (f" Size: {size['contracts']} contracts (${size['dollars']:.2f} + ${size['fee']:.2f} fee); "

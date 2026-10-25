@@ -56,6 +56,8 @@ events = Table(
     Column("kalshi_category", String(80)),
     Column("strike_date", BigInteger),
     Column("mutually_exclusive", Boolean),
+    Column("fee_type_override", String(60)),
+    Column("fee_multiplier_override", Float),
     Column("updated_ts", BigInteger),
 )
 
@@ -91,6 +93,8 @@ markets = Table(
     Column("open_interest", Float),
     Column("liquidity", Float),
     Column("tick_size", Float),
+    Column("price_ranges", Text),  # JSON [[start, end, step], ...] from Kalshi's price grid
+    Column("settlement_value", Float),  # YES settlement value in dollars (1, 0, or e.g. 0.5 on a tie)
     Column("rules_primary", Text),
     Column("updated_ts", BigInteger),
     Column("pull_id", Integer),

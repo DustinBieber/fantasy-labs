@@ -20,7 +20,29 @@ def iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def d4(cents: float) -> str:
+    """Kalshi's fixed-point dollar string, e.g. 55 -> "0.5500"."""
+    return f"{cents / 100:.4f}"
+
+
+CENT_GRID = [{"start": "0.0100", "end": "0.9900", "step": "0.0100"}]
+DECI_GRID = [{"start": "0.0010", "end": "0.9990", "step": "0.0010"}]
+
+
+def mkt(ticker, event, bid, ask, last=None, vol=0, vol24=0, oi=0, close=None, grid=CENT_GRID, **extra):
+    """A market object in Kalshi's current shape: *_dollars prices, *_fp counts, price_ranges grid."""
+    m = {"ticker": ticker, "event_ticker": event, "yes_bid_dollars": d4(bid), "yes_ask_dollars": d4(ask),
+         "no_bid_dollars": d4(100 - ask), "no_ask_dollars": d4(100 - bid),
+         "last_price_dollars": d4(last) if last is not None else "0.0000",
+         "volume_fp": f"{vol:.2f}", "volume_24h_fp": f"{vol24:.2f}", "open_interest_fp": f"{oi:.2f}",
+         "status": "active", "close_time": close, "price_level_structure": "linear_cent", "price_ranges": grid}
+    m.update(extra)
+    return m
+
+
 class FakeKalshi:
+    HOST = "external-api.kalshi.com"
+
     def __init__(self):
         now = datetime.now(timezone.utc)
         self.today = now.date()
@@ -28,63 +50,65 @@ class FakeKalshi:
         self.ev_nfl = f"KXNFLGAME-{tk(self.game_day)}DALDEN"
         kick = iso(now + timedelta(days=2))
         self.nfl = {
-            f"{self.ev_nfl}-DEN": {"ticker": f"{self.ev_nfl}-DEN", "event_ticker": self.ev_nfl, "yes_sub_title": "Denver",
-                                   "title": "Dallas at Denver Winner?", "yes_bid": 55, "yes_ask": 58, "last_price": 56,
-                                   "volume": 5000, "volume_24h": 900, "open_interest": 3000, "status": "active",
-                                   "close_time": kick, "tick_size": 1},
-            f"{self.ev_nfl}-DAL": {"ticker": f"{self.ev_nfl}-DAL", "event_ticker": self.ev_nfl, "yes_sub_title": "Dallas",
-                                   "title": "Dallas at Denver Winner?", "yes_bid": 42, "yes_ask": 45, "last_price": 44,
-                                   "volume": 4000, "volume_24h": 800, "open_interest": 2500, "status": "active",
-                                   "close_time": kick, "tick_size": 1},
+            f"{self.ev_nfl}-DEN": mkt(f"{self.ev_nfl}-DEN", self.ev_nfl, 55, 58, 56, 5000, 900, 3000, kick,
+                                      yes_sub_title="Denver", title="Dallas at Denver Winner?"),
+            f"{self.ev_nfl}-DAL": mkt(f"{self.ev_nfl}-DAL", self.ev_nfl, 42, 45, 44, 4000, 800, 2500, kick,
+                                      yes_sub_title="Dallas", title="Dallas at Denver Winner?"),
         }
-        # Settled daily gas events for the last 14 days, rising 0.8c/day, slowing at the end.
-        self.settled = []
-        val = 3.000
+        # Settled daily gas events for the last 14 days, rising 0.8c/day, slowing at the end. The older half
+        # sits behind Kalshi's historical cutoff and is only served by /historical endpoints.
+        self.cutoff = now - timedelta(days=7, hours=12)
+        self.settled_live, self.settled_hist = [], []
+        val = 3.0000
         for i in range(14, 0, -1):
             d = self.today - timedelta(days=i)
             val += 0.008 if i > 2 else 0.003
             ev = f"KXAAAGASD-{tk(d)}"
+            close_dt = datetime(d.year, d.month, d.day, 3, 59, tzinfo=timezone.utc)  # 11:59pm ET the night before
             for k in (2.98, 3.03, 3.08):
-                self.settled.append({"ticker": f"{ev}-T{k:.2f}", "event_ticker": ev, "strike_type": "greater",
-                                     "floor_strike": k, "status": "finalized", "result": "yes" if val > k else "no",
-                                     "expiration_value": f"{val:.3f}",
-                                     "close_time": iso(datetime(d.year, d.month, d.day, 14, tzinfo=timezone.utc))})
-        self.latest = round(val, 3)
+                m = {"ticker": f"{ev}-{k:.3f}", "event_ticker": ev, "strike_type": "greater", "floor_strike": k,
+                     "status": "finalized", "result": "yes" if val > k else "no",
+                     "settlement_value_dollars": "1.0000" if val > k else "0.0000",
+                     "expiration_value": f"{val:.4f}", "close_time": iso(close_dt)}
+                (self.settled_hist if close_dt < self.cutoff else self.settled_live).append(m)
+        self.latest = round(val, 4)
         tomorrow = self.today + timedelta(days=1)
         self.ev_gas = f"KXAAAGASD-{tk(tomorrow)}"
         gclose = iso(now + timedelta(hours=20))
         self.gas = {}
         for k, (b, a) in {3.06: (92, 95), 3.08: (70, 74), 3.10: (40, 44), 3.12: (12, 16)}.items():
-            t = f"{self.ev_gas}-T{k:.2f}"
-            self.gas[t] = {"ticker": t, "event_ticker": self.ev_gas, "strike_type": "greater", "floor_strike": k,
-                           "yes_sub_title": f"Above ${k:.2f}", "title": "US gas price tomorrow", "yes_bid": b,
-                           "yes_ask": a, "volume": 300, "volume_24h": 100, "status": "active", "close_time": gclose,
-                           "tick_size": 1}
+            t = f"{self.ev_gas}-{k:.3f}"
+            self.gas[t] = mkt(t, self.ev_gas, b, a, None, 300, 100, 0, gclose, DECI_GRID, strike_type="greater",
+                              floor_strike=k, yes_sub_title=f"Above ${k:.2f}", title="US gas price tomorrow")
         self.calls = []
 
     def events_payload(self):
         return {"events": [
             {"event_ticker": self.ev_nfl, "series_ticker": "KXNFLGAME", "title": "Dallas at Denver",
              "category": "Sports", "markets": list(self.nfl.values())},
-            {"event_ticker": self.ev_gas, "series_ticker": "KXAAAGASD", "title": "Gas prices in the US tomorrow (AAA)",
+            {"event_ticker": self.ev_gas, "series_ticker": "KXAAAGASD", "title": "US gas prices tomorrow",
              "category": "Economics", "markets": list(self.gas.values())},
             {"event_ticker": "KXNFLANYTD-X", "series_ticker": "KXNFLANYTD", "title": "Anytime touchdown scorer",
-             "category": "Sports", "markets": [{"ticker": "KXNFLANYTD-X-1", "event_ticker": "KXNFLANYTD-X",
-                                                 "yes_bid": 30, "yes_ask": 33, "status": "active",
-                                                 "close_time": self.nfl[next(iter(self.nfl))]["close_time"]}]},
+             "category": "Sports",
+             "markets": [mkt("KXNFLANYTD-X-1", "KXNFLANYTD-X", 30, 33, close=self.nfl[next(iter(self.nfl))]["close_time"])]},
         ], "cursor": ""}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = request.url
         q = {k: v[0] for k, v in parse_qs(url.query.decode()).items()}
         self.calls.append((url.host, url.path, q))
-        if url.host == "api.elections.kalshi.com":
+        if url.host == self.HOST:
             path = url.path.replace("/trade-api/v2", "")
             if path == "/events":
                 return httpx.Response(200, json=self.events_payload())
+            if path == "/historical/cutoff":
+                return httpx.Response(200, json={"market_settled_ts": iso(self.cutoff)})
+            if path == "/historical/markets":
+                rows = self.settled_hist if q.get("series_ticker") == "KXAAAGASD" else []
+                return httpx.Response(200, json={"markets": rows, "cursor": ""})
             if path == "/markets":
                 if q.get("status") == "settled" and q.get("series_ticker") == "KXAAAGASD":
-                    return httpx.Response(200, json={"markets": self.settled, "cursor": ""})
+                    return httpx.Response(200, json={"markets": self.settled_live, "cursor": ""})
                 if q.get("series_ticker") == "KXNFLGAME" and q.get("status") == "open":
                     return httpx.Response(200, json={"markets": [m for m in self.nfl.values() if m["status"] == "active"]})
                 if q.get("series_ticker") == "KXAAAGASD" and q.get("status") == "open":
@@ -93,11 +117,21 @@ class FakeKalshi:
                     allm = {**self.nfl, **self.gas}
                     return httpx.Response(200, json={"markets": [allm[t] for t in q["tickers"].split(",") if t in allm]})
                 return httpx.Response(200, json={"markets": []})
-            if path.startswith("/series/") and "/candlesticks" in path:
-                strike = path.split("/")[4].rsplit("-T", 1)[-1]
-                bid = {"2.98": 85, "3.03": 45, "3.08": 10}[strike]
-                return httpx.Response(200, json={"candlesticks": [
-                    {"end_period_ts": int(q["end_ts"]) - 100, "yes_bid": {"close": bid}, "yes_ask": {"close": bid + 4}}]})
+            if "/candlesticks" in path:
+                ticker = path.split("/")[-2]
+                strike = ticker.rsplit("-", 1)[-1]
+                bid = {"2.980": 85, "3.030": 45, "3.080": 10}[strike]
+                end = int(q["end_ts"]) - 100
+                if path.startswith("/historical/"):
+                    if ticker not in {m["ticker"] for m in self.settled_hist}:
+                        return httpx.Response(404, json={"error": "not archived"})
+                    c = {"end_period_ts": end, "yes_bid": {"close": d4(bid)}, "yes_ask": {"close": d4(bid + 4)}}
+                else:
+                    if ticker not in {m["ticker"] for m in self.settled_live}:
+                        return httpx.Response(404, json={"error": "settled before cutoff"})
+                    c = {"end_period_ts": end, "yes_bid": {"close_dollars": d4(bid)},
+                         "yes_ask": {"close_dollars": d4(bid + 4)}}
+                return httpx.Response(200, json={"candlesticks": [c]})
             if path.startswith("/series/"):
                 st = path.split("/")[2]
                 return httpx.Response(200, json={"series": {"ticker": st, "title": st, "fee_type": "quadratic_with_maker_fees",
@@ -172,12 +206,25 @@ def test_full_phase1_flow(client, fake):
 
     # Gas: settlement backfill gives AAA history + calibration marks.
     bf = run(client, "gas_backfill")
-    assert bf["actuals"] == 14 and bf["calibration_marks"] >= 1
+    assert bf["actuals"] == 14 and bf["calibration_marks"] == 14 and bf["errors"] == []
+    paths = {c[1] for c in fake.calls}
+    assert "/trade-api/v2/historical/markets" in paths  # older settlements come from the archive
+    assert any(p.startswith("/trade-api/v2/historical/markets/") and p.endswith("/candlesticks") for p in paths)
     gas = client.get("/api/gas").json()
     assert gas["aaa"]["latest"] == pytest.approx(fake.latest)
     lad = gas["ladders"][0]
     assert lad["implied_median"] is not None and lad["model"]["ok"]
-    assert gas["calibration"]["market"]["n"] >= 1
+    assert gas["calibration"]["market"]["n"] == 14
+    # The model median is graded on every day with enough prior history (7 daily changes), not just some.
+    assert gas["calibration"]["model"]["n"] == gas["model_score"]["days"] > 0
+    # Maker price snaps to the market's 0.1-cent grid: 0.40 bid -> rest at 0.401.
+    yes310 = next(o for o in gas["opportunities"] if o["ticker"].endswith("3.100") and o["side"] == "yes")
+    assert yes310["maker_price"] == 0.401
+    # Too few graded days for the model to have proven itself against Kalshi: nothing above Watch.
+    sc = gas["model_score"]
+    assert sc["days"] < sc["min_days"] and sc["adds_value"] is False
+    assert all(o["tier"] in ("W", "P") for o in gas["opportunities"])
+    assert any("Model check" in w for o in gas["opportunities"] for w in o["warnings"])
     # Rising but slowing trend: any bet that only wins on a drop below the latest AAA must be Pass.
     for o in gas["opportunities"]:
         trap = [w for w in o["warnings"] if "TRAP" in w]
@@ -195,24 +242,24 @@ def test_full_phase1_flow(client, fake):
     # Paper trade: resting maker bid on DEN YES at 0.56.
     t = client.post("/api/trades", json={"mode": "paper", "ticker": den["ticker"], "side": "yes",
                                          "limit_price": 0.56, "contracts": 10, "tier": "G"}).json()
-    assert t["status"] == "resting" and t["fees"] == 0.05  # 0.0175 x 10 x .56 x .44 = 0.043 -> 0.05
+    assert t["status"] == "resting" and t["fees"] == 0.0432  # 0.0175 x 10 x .56 x .44 = 0.04312 -> 0.0432
     run(client, "settle")
     assert client.get("/api/trades").json()[0]["status"] == "resting"
-    fake.nfl[den["ticker"]]["yes_ask"] = 56  # the market comes to our bid
+    fake.nfl[den["ticker"]]["yes_ask_dollars"] = "0.5600"  # the market comes to our bid
     run(client, "kalshi_active")
     run(client, "settle")
     tr = client.get("/api/trades").json()[0]
     assert tr["status"] == "open" and "ask 0.56 reached" in tr["fill_note"]
     port = client.get("/api/portfolio").json()
-    assert port["open_exposure"] == pytest.approx(5.65)
+    assert port["open_exposure"] == pytest.approx(5.6432, abs=0.005)
 
     # Game ends: DEN wins, market settles.
     past = iso(datetime.now(timezone.utc) - timedelta(minutes=5))
-    fake.nfl[den["ticker"]].update(status="finalized", result="yes", close_time=past)
+    fake.nfl[den["ticker"]].update(status="finalized", result="yes", settlement_value_dollars="1.0000", close_time=past)
     run(client, "settle")
     tr = client.get("/api/trades").json()[0]
-    assert tr["status"] == "settled" and tr["realized_pnl"] == pytest.approx(10 * 0.44 - 0.05)
-    assert client.get("/api/status").json()["bankroll"] == pytest.approx(1000 + 4.35)
+    assert tr["status"] == "settled" and tr["realized_pnl"] == pytest.approx(10 * 0.44 - 0.0432)
+    assert client.get("/api/status").json()["bankroll"] == pytest.approx(1000 + 4.36, abs=0.006)
 
     csv_text = client.get("/api/trades.csv").text
     assert csv_text.splitlines()[0].startswith("id,mode,status,ticker")

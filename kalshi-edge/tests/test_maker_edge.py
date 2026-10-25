@@ -18,6 +18,20 @@ def test_maker_price_rules():
     assert maker_price(0.40, 0.45, improve_ticks=9)[0] == 0.40  # never cross: falls back to joining
 
 
+def test_price_grid_steps():
+    from app.engine.maker import tick_at
+    deci = [[0.001, 0.999, 0.001]]
+    tapered = [[0.0001, 0.01, 0.0001], [0.01, 0.99, 0.01], [0.99, 0.9999, 0.0001]]
+    assert tick_at(deci, 0.40) == 0.001
+    assert tick_at(tapered, 0.50) == 0.01
+    assert tick_at(tapered, 0.005) == 0.0001
+    assert tick_at(tapered, 0.01) == 0.0001  # band edge: the finer step applies
+    assert tick_at(None, 0.5) == 0.01
+    assert maker_price(0.40, 0.44, ranges=deci)[0] == 0.401
+    assert maker_price(0.40, 0.401, ranges=deci)[0] == 0.40  # one-step spread: join
+    assert maker_price(0.40, 0.44, ranges='[[0.001, 0.999, 0.001]]')[0] == 0.401  # stored JSON form
+
+
 def test_no_side_quotes_derived_from_yes():
     q = side_quotes(0.42, 0.44, None, None)
     assert q["no"] == (0.56, 0.58)
@@ -60,3 +74,11 @@ def test_evaluate_without_price_never_invents_one():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     o = evaluate(_market(yes_bid=None, yes_ask=None), "yes", 0.6, {"steps": []}, s, 1000.0)
     assert o["maker_price"] is None and o["tier"] == "P"
+
+
+def test_settlement_value_handles_ties():
+    from app.services.portfolio import settlement_yes_value
+    assert settlement_yes_value({"result": "yes"}) == 1.0
+    assert settlement_yes_value({"result": "no"}) == 0.0
+    assert settlement_yes_value({"result": None, "status": "finalized", "settlement_value": 0.5}) == 0.5
+    assert settlement_yes_value({"result": None, "status": "active", "settlement_value": None}) is None

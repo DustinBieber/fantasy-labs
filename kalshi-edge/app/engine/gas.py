@@ -217,37 +217,96 @@ def blend_fair(model_p: Optional[float], market_p: Optional[float], weight: floa
     return weight * mp + (1 - weight) * market_p
 
 
-def model_prob(market: Dict[str, Any], dist: Dict[str, Any]) -> Optional[float]:
-    """P(YES) under the model for threshold or bucket markets."""
+def model_prob(market: Dict[str, Any], dist: Dict[str, Any], tick: float = 0.0001) -> Optional[float]:
+    """P(YES) under the model for threshold or bucket markets.
+
+    AAA prints on a $0.0001 grid and 'above' means strictly above (an exact match resolves NO), so a
+    continuity correction of half a tick is applied: P(X > K) = P(X >= K + tick) ~ 1 - Phi((K + tick/2 - mu)/sigma).
+    """
     st = (market.get("strike_type") or "").lower()
     fl, cp = market.get("floor_strike"), market.get("cap_strike")
     if dist.get("known") is not None:
-        x = dist["known"]
-        if st in ("greater",):
-            return 1.0 if x > fl else 0.0
-        if st == "greater_or_equal":
-            return 1.0 if x >= fl else 0.0
-        if st in ("less",):
-            return 1.0 if x < cp else 0.0
-        if st == "less_or_equal":
-            return 1.0 if x <= cp else 0.0
-        if st == "between":
-            return 1.0 if (fl is None or x >= fl) and (cp is None or x <= cp) else 0.0
-        return None
+        y = outcome_yes(market, dist["known"])
+        return None if y is None else float(y)
     mu, sg = dist["mu"], dist["sigma"]
+    h = tick / 2.0
 
-    def above(k):
-        return 1.0 - normal_cdf((k - mu) / sg)
+    def cdf(x):
+        return normal_cdf((x - mu) / sg)
 
-    if st in ("greater", "greater_or_equal") and fl is not None:
-        return above(fl)
-    if st in ("less", "less_or_equal") and cp is not None:
-        return 1.0 - above(cp)
+    if st == "greater" and fl is not None:
+        return 1.0 - cdf(fl + h)
+    if st == "greater_or_equal" and fl is not None:
+        return 1.0 - cdf(fl - h)
+    if st == "less" and cp is not None:
+        return cdf(cp - h)
+    if st == "less_or_equal" and cp is not None:
+        return cdf(cp + h)
     if st == "between":
-        lo = above(fl) if fl is not None else 1.0
-        hi = above(cp) if cp is not None else 0.0
-        return max(0.0, lo - hi)
+        hi = cdf(cp + h) if cp is not None else 1.0
+        lo = cdf(fl - h) if fl is not None else 0.0
+        return max(0.0, hi - lo)
     return None
+
+
+def outcome_yes(market: Dict[str, Any], x: float) -> Optional[int]:
+    """1 if YES wins at AAA value x, else 0 ('above' is strict: equal to the strike resolves NO)."""
+    st = (market.get("strike_type") or "").lower()
+    fl, cp = market.get("floor_strike"), market.get("cap_strike")
+    if st == "greater" and fl is not None:
+        return int(x > fl)
+    if st == "greater_or_equal" and fl is not None:
+        return int(x >= fl)
+    if st == "less" and cp is not None:
+        return int(x < cp)
+    if st == "less_or_equal" and cp is not None:
+        return int(x <= cp)
+    if st == "between":
+        return int((fl is None or x >= fl) and (cp is None or x <= cp))
+    return None
+
+
+SCORE_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+
+def blend_scores(records: Sequence[Tuple[float, float, int, str]], current_w: float, min_days: int,
+                 clamp: float = 0.01) -> Dict[str, Any]:
+    """Brier score of w x model + (1 - w) x Kalshi on graded strikes, for several w.
+
+    records: (model_p, kalshi_p, outcome 0/1, event_ticker). Lower Brier is better. w = 0 means 'Kalshi alone'.
+    The model only 'adds value' if, over at least `min_days` settled days, the current weight beats Kalshi alone.
+    """
+    days = len({r[3] for r in records})
+    out: Dict[str, Any] = {"strikes": len(records), "days": days, "min_days": min_days, "current_weight": current_w}
+    if not records:
+        out.update(adds_value=False, verdict="No graded gas ladders yet, so the model has not been tested against Kalshi.")
+        return out
+
+    def brier(w):
+        tot = 0.0
+        for mp, kp, y, _ in records:
+            f = w * min(max(mp, clamp), 1 - clamp) + (1 - w) * kp
+            tot += (f - y) ** 2
+        return tot / len(records)
+
+    weights = sorted(set(SCORE_WEIGHTS) | {round(current_w, 4)})
+    scores = {w: round(brier(w), 5) for w in weights}
+    best = min(scores, key=lambda w: (scores[w], w))
+    market_only, current = scores[0.0], scores[round(current_w, 4)]
+    adds = days >= min_days and current < market_only
+    if days < min_days:
+        verdict = (f"Only {days} graded day(s); need {min_days} before trusting the model over Kalshi. "
+                   f"Gas edges are capped at Watch until then.")
+    elif adds:
+        verdict = (f"On {days} settled days the {current_w:g} blend scored Brier {current:.4f} vs Kalshi alone "
+                   f"{market_only:.4f}: the model has added value. Best weight on this history: {best:g}.")
+    else:
+        verdict = (f"On {days} settled days the {current_w:g} blend scored Brier {current:.4f} vs Kalshi alone "
+                   f"{market_only:.4f}: the model has NOT beaten Kalshi, so gas edges are capped at Watch. "
+                   f"Best weight on this history: {best:g}.")
+    out.update(brier=scores, market_only=market_only, current=current, best_weight=best, adds_value=adds,
+               verdict=verdict)
+    return out
 
 
 def winning_region(market: Dict[str, Any], side: str) -> Tuple[Optional[float], Optional[float]]:

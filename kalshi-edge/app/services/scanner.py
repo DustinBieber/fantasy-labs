@@ -195,6 +195,12 @@ def series_row(series_ticker: Optional[str]) -> Optional[Dict[str, Any]]:
     return db.fetch_one(select(db.series).where(db.series.c.series_ticker == series_ticker))
 
 
+def event_row(event_ticker: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not event_ticker:
+        return None
+    return db.fetch_one(select(db.events).where(db.events.c.event_ticker == event_ticker))
+
+
 def open_markets(series: Iterable[str]) -> List[Dict[str, Any]]:
     return db.fetch_all(select(db.markets).where(and_(
         db.markets.c.series_ticker.in_(list(series)), db.markets.c.status.in_(_OPEN_STATUSES),

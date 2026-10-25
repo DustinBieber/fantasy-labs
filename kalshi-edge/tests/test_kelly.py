@@ -23,8 +23,8 @@ def test_per_strike_cap_binds_and_fee_fits_inside_stake():
     # quarter Kelly here is ~$73; the 2.5% cap ($25) binds
     assert s["binding"] == "per-strike cap"
     assert s["contracts"] == 49
-    assert s["fee"] == 0.22  # 0.0175 x 49 x 0.25 = 0.214 -> 0.22
-    assert s["max_loss"] == pytest.approx(24.72)
+    assert s["fee"] == 0.2144  # 0.0175 x 49 x 0.25 = 0.214375 -> 0.2144 (direct-member precision)
+    assert s["max_loss"] == pytest.approx(24.7144)
     assert s["max_loss"] <= 25.0
 
 

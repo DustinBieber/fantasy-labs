@@ -30,12 +30,12 @@ def parse_national_average(page: str) -> Dict[str, Any]:
     text = htmllib.unescape(page)
     flat = re.sub(r"\s+", " ", text)
     value: Optional[float] = None
-    m = re.search(r"Today[’']?s AAA National Average.{0,300}?\$\s*([0-9]\.[0-9]{2,3})", flat, re.I)
+    m = re.search(r"Today[’']?s AAA National Average.{0,300}?\$\s*([0-9]\.[0-9]{2,4})", flat, re.I)
     if m:
         value = float(m.group(1))
     table: Dict[str, float] = {}
     for label in ("Current Avg.", "Yesterday Avg.", "Week Ago Avg.", "Month Ago Avg.", "Year Ago Avg."):
-        tm = re.search(re.escape(label) + r"\s*</t[dh]>\s*<td[^>]*>\s*\$?\s*([0-9]\.[0-9]{2,3})", flat, re.I)
+        tm = re.search(re.escape(label) + r"\s*</t[dh]>\s*<td[^>]*>\s*\$?\s*([0-9]\.[0-9]{2,4})", flat, re.I)
         if tm:
             table[label] = float(tm.group(1))
     if value is None and "Current Avg." in table:

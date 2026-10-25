@@ -113,22 +113,34 @@ def fair_for_game(teams: Tuple[str, str], settings: Dict[str, Any], game_date=No
         for r in rows:
             latest_by_book.setdefault(r["book"], r)
         per_book, steps = [], []
+        sharp_keys = {b.lower() for b in settings["nfl"].get("sharp_books", [])}
+        sharp = []
         for book, r in sorted(latest_by_book.items()):
             d = devig.devig_two_way(r["home_price"], r["away_price"])
             p_first = d["home"] if r["home_team"] == teams[0] else d["away"]
             per_book.append(p_first)
+            if book.lower() in sharp_keys:
+                sharp.append((book, p_first))
             steps.append(f"[{book} @ {hst(r['ts'], '%I:%M %p')}] {team_name(r['away_team'])} {r['away_price']:+d} at "
                          f"{team_name(r['home_team'])} {r['home_price']:+d}: vig {100 * (d['overround'] - 1):.2f}%, "
                          f"fair {teams[0]} {p_first:.4f}")
-        fair = float(median(per_book))
         n = len(per_book)
-        label = {"odds_api": f"Sportsbook consensus (median of {n} book{'s' if n != 1 else ''}, vig removed)",
-                 "manual": f"Your manual line{'s' if n != 1 else ''} ({', '.join(sorted(latest_by_book))}, vig removed)",
-                 "espn": f"ESPN's single book ({next(iter(latest_by_book))}, vig removed; low confidence)"}[source]
-        steps.append(f"Fair {teams[0]} = median of {n} devigged book price(s) = {fair:.4f}")
+        if source == "odds_api" and sharp:
+            fair = float(median(p for _, p in sharp))
+            names = ", ".join(b for b, _ in sharp)
+            label = f"Sharp book line ({names}, vig removed)"
+            steps.append(f"Sharp book(s) present ({names}): fair {teams[0]} = {fair:.4f} "
+                         f"(all-book median would be {float(median(per_book)):.4f})")
+        else:
+            fair = float(median(per_book))
+            label = {"odds_api": f"Sportsbook consensus (median of {n} book{'s' if n != 1 else ''}, vig removed)",
+                     "manual": f"Your manual line{'s' if n != 1 else ''} ({', '.join(sorted(latest_by_book))}, vig removed)",
+                     "espn": f"ESPN's single book ({next(iter(latest_by_book))}, vig removed; low confidence)"}[source]
+            steps.append(f"Fair {teams[0]} = median of {n} devigged book price(s) = {fair:.4f}")
         newest = max(r["ts"] for r in latest_by_book.values())
         return {"source": source, "fair_first": fair, "books": n, "steps": steps, "plain": label,
-                "as_of_ts": newest, "as_of": hst(newest), "confidence": "low" if source == "espn" or n < 3 else "normal",
+                "as_of_ts": newest, "as_of": hst(newest),
+                "confidence": "normal" if (sharp and source == "odds_api") or (source != "espn" and n >= 3) else "low",
                 "pull_ids": sorted({r["pull_id"] for r in latest_by_book.values() if r["pull_id"]})}
     return None
 
@@ -188,6 +200,7 @@ def board(include_all_sides: bool = False) -> Dict[str, Any]:
         ctx = _game_context((ta, tb))
         started = bool(ctx and ctx.get("commence_ts") and ctx["commence_ts"] <= now)
         pair = {ma["ticker"]: mb["ticker"], mb["ticker"]: ma["ticker"]}
+        ev_row = scanner.event_row(ev)
         title = mkts[0].get("event_title") or mkts[0].get("title") or ev
         game = {"event_ticker": ev, "title": title, "date": game_date.isoformat() if game_date else None,
                 "context": ctx, "fair": fair, "teams": [], "started": started}
@@ -216,7 +229,7 @@ def board(include_all_sides: bool = False) -> Dict[str, Any]:
                 subj = team_name(team) + (" to win" if side == "yes" else " to lose")
                 opp = evaluate(m, side, q, fair_info, settings, bank, scanner.series_row(m["series_ticker"]),
                                exposure.get(portfolio.corr_key(m["series_ticker"], ev, gas_series), 0.0), st, note,
-                               "nfl", warnings, force_pass=force, plain_subject=subj)
+                               "nfl", warnings, force_pass=force, plain_subject=subj, event_row=ev_row)
                 opp["board"] = "Game winners"
                 opp["sport"] = SPORT
                 opp["game_title"] = title

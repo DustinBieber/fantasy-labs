@@ -30,13 +30,16 @@ def main() -> int:
     from app.timeutil import hst, now_ts
 
     print(f"Kalshi Edge live smoke test · {hst(now_ts())}")
+    print(f"Kalshi API: {config.KALSHI_API_BASE}")
     print(f"Database: {config.DATABASE_URL}\n")
     order = ["kalshi_series", "kalshi_active", "espn_nfl", "odds_api", "aaa", "gas_backfill", "settle"]
     if not args.skip_scan:
         order.insert(0, "kalshi_scan")
+    results = {}
     for name in order:
         t0 = time.time()
         res = jobs.run_job(name)
+        results[name] = res
         print(f"  {jobs.JOBS[name]['label']:<32} {time.time() - t0:5.1f}s  {res}")
 
     print("\nOpen markets by board:")
@@ -78,6 +81,47 @@ def main() -> int:
         for line in best["math"]:
             print(f"  - {line}")
         print(f"  Reason: {best['reason']}")
+
+    sc = gas.get("model_score") or {}
+    print(f"  Model check: {sc.get('verdict')}")
+    if sc.get("brier"):
+        print(f"  Brier by model weight (lower is better): {sc['brier']}")
+
+    print("\nSeries fee types from Kalshi:")
+    for r in db.fetch_all(select(db.series)):
+        print(f"  {r['series_ticker']:<14} fee_type={r['fee_type']} multiplier={r['fee_multiplier']}")
+
+    print("\nVERIFY (each line is an assumption the app depends on):")
+    priced = db.fetch_one(select(func.count().label("n")).select_from(db.markets).where(db.markets.c.yes_bid.isnot(None)))
+    grids = db.fetch_one(select(func.count().label("n")).select_from(db.markets).where(db.markets.c.price_ranges.isnot(None)))
+    bf = results.get("gas_backfill", {})
+    espn_res = results.get("espn_nfl", {})
+    checks = [
+        ("Kalshi API reachable and scan parsed", "error" not in results.get("kalshi_scan", {"error": 1}) or args.skip_scan,
+         "Check KALSHI_API_BASE in .env; https://api.elections.kalshi.com/trade-api/v2 is the fallback host."),
+        ("Kalshi prices parsed (*_dollars fields)", (priced or {}).get("n", 0) > 0,
+         "Markets loaded but no bids parsed: Kalshi may have renamed price fields. Send me one /markets response."),
+        ("Kalshi price grid parsed (price_ranges)", (grids or {}).get("n", 0) > 0,
+         "No price_ranges found: maker prices fall back to whole cents (still valid)."),
+        ("Series fee types loaded", bool(db.fetch_all(select(db.series).where(db.series.c.fee_type.isnot(None)))),
+         "Fees fall back to the conservative defaults until /series loads."),
+        ("NFL game markets found (KXNFLGAME)", len(nfl["games"]) > 0,
+         "No open NFL game markets: check the series ticker under Settings -> NFL."),
+        ("Gas ladder found (KXAAAGASD and friends)", len(gas["ladders"]) > 0,
+         "No open gas markets: check Settings -> Gas series tickers."),
+        ("Settled gas history loaded (live + /historical)", isinstance(bf, dict) and bf.get("actuals", 0) > 0,
+         f"Backfill result: {bf}"),
+        ("Gas ladders graded for calibration", isinstance(bf, dict) and bf.get("calibration_marks", 0) > 0,
+         "Candlestick fetch failed or returned nothing; the model check stays at Watch until graded."),
+        ("AAA national average scraped", "error" not in results.get("aaa", {"error": 1}),
+         "AAA blocked the scraper: enter the value by hand on Commodities & Econ (or rely on Kalshi settlements)."),
+        ("ESPN odds parsed", isinstance(espn_res, dict) and espn_res.get("with_moneyline", 0) > 0,
+         "ESPN returned no moneylines (normal if no upcoming games have odds); use manual lines or ODDS_API_KEY."),
+        ("The Odds API on", "skipped" not in results.get("odds_api", {}),
+         "Optional: add ODDS_API_KEY to .env for sharp-book (Pinnacle) fair prices."),
+    ]
+    for label, ok, hint in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}" + ("" if ok else f"\n        -> {hint}"))
 
     print("\nData freshness:")
     for f in jobs.freshness():

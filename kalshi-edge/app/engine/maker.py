@@ -1,41 +1,72 @@
-"""Maker (resting) price: the limit price we would post without crossing the spread."""
+"""Maker (resting) price: the limit price we would post without crossing the spread.
+
+Kalshi publishes each market's valid price grid as price_ranges bands of (start, end, step); prices off
+the grid are rejected. Whole cents are valid everywhere, so 1 cent is the fallback step. The grids are
+symmetric around 50 cents, so the same bands apply to NO prices.
+"""
 from __future__ import annotations
 
-from typing import Optional, Tuple
+import json
+from typing import List, Optional, Sequence, Tuple, Union
+
+Ranges = Optional[Union[str, Sequence[Sequence[float]]]]
 
 
-def _round_tick(x: float, tick: float) -> float:
-    return round(round(x / tick) * tick, 4)
+def _ranges(r: Ranges) -> List[Sequence[float]]:
+    if not r:
+        return []
+    if isinstance(r, str):
+        try:
+            return json.loads(r)
+        except ValueError:
+            return []
+    return list(r)
+
+
+def tick_at(ranges: Ranges, price: float, default: float = 0.01) -> float:
+    """Grid step for a price. At a band boundary, the finer of the two bands applies."""
+    steps = [st for a, b, st in _ranges(ranges) if a - 1e-9 <= price <= b + 1e-9]
+    return min(steps) if steps else default
+
+
+def _snap(x: float, step: float) -> float:
+    return round(round(x / step) * step, 4)
 
 
 def maker_price(best_bid: Optional[float], best_ask: Optional[float], tick: float = 0.01,
-                improve_ticks: int = 1) -> Tuple[Optional[float], str]:
+                improve_ticks: int = 1, ranges: Ranges = None) -> Tuple[Optional[float], str]:
     """Price to rest a buy order at for one side of a market.
 
-    - Improve the best bid by `improve_ticks` ticks, but stay at least one tick under the ask.
-    - Spread of one tick: join the bid.
-    - No bid: rest one tick under the ask (thin book).
+    - Improve the best bid by `improve_ticks` grid steps, but stay at least one step under the ask.
+    - Spread of one step: join the bid.
+    - No bid: rest one step under the ask (thin book).
     - No ask: improve the bid.
     - Neither: no price (we never invent one).
     """
     tick = tick or 0.01
     bid = best_bid if best_bid and best_bid > 0 else None
     ask = best_ask if best_ask and best_ask < 1 else None
+
+    def step(p: float) -> float:
+        return tick_at(ranges, p, tick) if ranges else tick
+
     if bid is None and ask is None:
         return None, "No bid or ask on this side; no maker price."
     if bid is None:
-        p = _round_tick(ask - tick, tick)
+        st = step(ask)
+        p = _snap(ask - st, st)
         if p <= 0:
             return None, "Ask is at the minimum tick; nothing to rest under it."
-        return p, f"Empty bid. Rest one tick under the {ask:.2f} ask (thin book, fill unlikely)."
+        return p, f"Empty bid. Rest one step ({st:g}) under the {ask:.4g} ask (thin book, fill unlikely)."
+    sb = step(bid)
     if ask is None:
-        p = _round_tick(min(bid + improve_ticks * tick, 1 - tick), tick)
-        return p, f"No ask. Improve the {bid:.2f} bid by {improve_ticks} tick."
-    target = bid + improve_ticks * tick
-    ceiling = ask - tick
+        p = _snap(min(bid + improve_ticks * sb, 1 - sb), sb)
+        return p, f"No ask. Improve the {bid:.4g} bid by {improve_ticks} step ({sb:g})."
+    target = bid + improve_ticks * sb
+    ceiling = ask - step(ask)
     if target <= ceiling + 1e-9:
-        return _round_tick(target, tick), f"Improve the {bid:.2f} bid by {improve_ticks} tick (ask {ask:.2f})."
-    return _round_tick(bid, tick), f"Spread is one tick ({bid:.2f}/{ask:.2f}); join the bid."
+        return _snap(target, sb), f"Improve the {bid:.4g} bid by {improve_ticks} step ({sb:g}); ask {ask:.4g}."
+    return _snap(bid, sb), f"Spread is one step ({bid:.4g}/{ask:.4g}); join the bid."
 
 
 def side_quotes(yes_bid: Optional[float], yes_ask: Optional[float], no_bid: Optional[float],

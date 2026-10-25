@@ -1,6 +1,9 @@
 import os
 
+# Tests never depend on a local .env: pin everything config reads.
 os.environ["SCHEDULER_ENABLED"] = "false"
+os.environ["KALSHI_API_BASE"] = "https://external-api.kalshi.com/trade-api/v2"
+os.environ["ODDS_API_KEY"] = ""
 
 import pytest  # noqa: E402
 

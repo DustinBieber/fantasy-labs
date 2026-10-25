@@ -28,8 +28,8 @@ const put = (p, body) => api(p, { method: 'PUT', body: JSON.stringify(body || {}
 const pct = (x, d = 1) => (x == null ? '—' : (100 * x).toFixed(d) + '%');
 const cents = (x) => {
   if (x == null) return '—';
-  const c = 100 * x;
-  return (Math.abs(c - Math.round(c)) < 1e-6 ? c.toFixed(0) : c.toFixed(1)) + '¢';
+  const c = Math.round(100 * x * 100) / 100;
+  return (Number.isInteger(c) ? c.toFixed(0) : String(c)) + '¢';
 };
 const money = (x) => (x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const signed = (x, d = 1, suf = '') => (x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(d) + suf);
@@ -201,12 +201,12 @@ function edgeDetail(o) {
 function tradeForm(o) {
   const sz = o.size || {};
   const id = `tf-${o.ticker}-${o.side}`;
-  return `<form class="trade-form grid grid-cols-2 sm:grid-cols-4 gap-2 bg-ink-950/60 border border-ink-800 rounded-lg p-3" data-ticker="${esc(o.ticker)}" data-maker-rate="${o.fee_rates?.maker ?? 0.0175}" data-taker-rate="${o.fee_rates?.taker ?? 0.07}" id="${esc(id)}">
+  return `<form class="trade-form grid grid-cols-2 sm:grid-cols-4 gap-2 bg-ink-950/60 border border-ink-800 rounded-lg p-3" data-ticker="${esc(o.ticker)}" data-maker-rate="${o.fee_rates?.maker ?? 0.0175}" data-taker-rate="${o.fee_rates?.taker ?? 0.07}" data-precision="${o.fee_rates?.precision ?? 0.0001}" id="${esc(id)}">
     <div class="col-span-2 sm:col-span-4 text-[11px] uppercase tracking-wider text-ink-400">Log a trade (paper by default; this app never places orders)</div>
     <label class="text-xs text-ink-400">Mode<select name="mode" class="${inputCls}"><option value="paper">Paper</option><option value="real">Real (already placed by me)</option></select></label>
     <label class="text-xs text-ink-400">Order<select name="order_type" class="${inputCls}"><option value="maker">Maker (rest bid)</option><option value="taker">Taker (hit ask)</option></select></label>
     <label class="text-xs text-ink-400">Side<select name="side" class="${inputCls}"><option value="yes" ${o.side === 'yes' ? 'selected' : ''}>YES</option><option value="no" ${o.side === 'no' ? 'selected' : ''}>NO</option></select></label>
-    <label class="text-xs text-ink-400">Price ($)<input name="limit_price" type="number" step="0.01" min="0.01" max="0.99" value="${o.maker_price ?? ''}" class="${inputCls}"></label>
+    <label class="text-xs text-ink-400">Price ($)<input name="limit_price" type="number" step="0.0001" min="0.0001" max="0.9999" value="${o.maker_price ?? ''}" class="${inputCls}"></label>
     <label class="text-xs text-ink-400">Contracts<input name="contracts" type="number" min="1" step="1" value="${sz.contracts || 1}" class="${inputCls}"></label>
     <label class="text-xs text-ink-400">Tier<select name="tier" class="${inputCls}">${['S', 'G', 'W', 'P'].map((t) => `<option ${o.tier === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
     <label class="text-xs text-ink-400 col-span-2">Expert source<input name="expert_source" class="${inputCls}" placeholder="optional"></label>
@@ -220,15 +220,18 @@ function tradeForm(o) {
     </div>
   </form>`;
 }
-function feeCalc(rate, c, p) { return Math.ceil(Math.round(rate * c * p * (1 - p) * 1e6) / 1e4 - 1e-9) / 100; }
+function feeCalc(rate, c, p, precision = 0.0001) {
+  const units = Math.round(rate * c * p * (1 - p) * 1e8) / 1e8 / precision;
+  return Math.ceil(units - 1e-9) * precision;
+}
 function updateMaxLoss(form) {
   const f = new FormData(form);
   const p = parseFloat(f.get('limit_price')); const c = parseInt(f.get('contracts'), 10);
   const rate = parseFloat(f.get('order_type') === 'maker' ? form.dataset.makerRate : form.dataset.takerRate);
   const out = form.querySelector('.maxloss');
   if (!(p > 0 && p < 1 && c > 0)) { out.textContent = ''; return; }
-  const fee = feeCalc(rate, c, p);
-  out.textContent = `Cost ${money(c * p)} + fee ${money(fee)} = max loss ${money(c * p + fee)} · pays ${money(c)} if right`;
+  const fee = feeCalc(rate, c, p, parseFloat(form.dataset.precision || '0.0001'));
+  out.textContent = `Cost ${money(c * p)} + fee $${fee.toFixed(4)} = max loss ${money(c * p + fee)} · pays ${money(c)} if right`;
 }
 async function submitTrade(form) {
   const f = new FormData(form);
@@ -382,7 +385,7 @@ function viewEcon() {
   const ch = (k) => (tr[k] == null ? '—' : signed(tr[k] * 100, 1, '¢'));
   const aaaCard = card(`${h2('AAA National Average (resolution source)', a.latest_date ? `latest ${esc(a.latest_date)}` : 'no readings yet')}
     <div class="flex flex-wrap gap-x-6 gap-y-2 mb-3">
-      ${stat('Latest', a.latest != null ? '$' + a.latest.toFixed(3) : '—', 'text-xl')}
+      ${stat('Latest', a.latest != null ? '$' + a.latest.toFixed(4) : '—', 'text-xl')}
       ${stat('Yesterday move', ch('chg_1d'))}${stat('3 days', ch('chg_3d'))}${stat('7 days', ch('chg_7d'))}${stat('14 days', ch('chg_14d'))}
       ${tr.decelerating != null ? stat('Trend', tr.decelerating ? 'rising, slowing' : (tr.chg_3d > 0 ? 'rising' : tr.chg_3d < 0 ? 'falling' : 'flat')) : ''}
     </div>
@@ -390,7 +393,7 @@ function viewEcon() {
     <details class="mt-3"><summary class="text-sm text-ink-300 cursor-pointer">Enter an AAA reading by hand (if the AAA pull is blocked)</summary>
       <form id="aaa-form" class="mt-2 grid grid-cols-3 gap-2">
         <label class="text-xs text-ink-400">Date<input name="date" type="date" class="${inputCls}"></label>
-        <label class="text-xs text-ink-400">Regular avg ($)<input name="value" type="number" step="0.001" class="${inputCls}" placeholder="3.123"></label>
+        <label class="text-xs text-ink-400">Regular avg ($)<input name="value" type="number" step="0.0001" class="${inputCls}" placeholder="4.2926"></label>
         <div class="flex items-end"><button class="${btn} w-full">Save</button></div>
       </form></details>`);
   const ladders = d.ladders.map((l, i) => ladderCard(l, i, d.opportunities)).join('') ||
@@ -405,8 +408,17 @@ function viewEcon() {
       <tbody>${calRow('Kalshi implied median', c.market || {})}${calRow('Our model median', c.model || {})}</tbody></table></div>
     <div class="text-xs text-ink-400 mt-2">A calibrated median has about 50% of outcomes above it and bias near 0.</div>
     <div class="h-44 mt-3"><canvas id="cal-chart"></canvas></div>`);
+  const sc = d.model_score || {};
+  const scRows = sc.brier ? Object.entries(sc.brier).sort((x, y) => +x[0] - +y[0]).map(([w, b]) => `<tr class="border-t border-ink-800">
+      <td class="py-1 pr-3">${+w === 0 ? 'Kalshi alone' : +w === 1 ? 'Model alone' : `${Math.round(w * 100)}% model`}${+w === sc.current_weight ? ' <span class="text-xs text-red-300">(current)</span>' : ''}</td>
+      <td class="tabular-nums ${+w === sc.best_weight ? 'text-emerald-300 font-semibold' : ''}">${b.toFixed(4)}</td></tr>`).join('') : '';
+  const scoreCard = card(`${h2('Model check: does the model beat Kalshi?', 'Brier score on settled gas strikes; lower is better')}
+    <div class="rounded-md border px-3 py-2 text-sm mb-3 ${sc.adds_value ? 'border-emerald-700 bg-emerald-950/40 text-emerald-100' : 'border-amber-700 bg-amber-950/40 text-amber-100'}">${esc(sc.verdict || 'Not scored yet.')}</div>
+    <div class="text-xs text-ink-400 mb-2">${sc.strikes || 0} strikes over ${sc.days || 0} settled days (needs ${sc.min_days ?? 10}). Each day uses only AAA values known when the ladder was priced.</div>
+    ${scRows ? `<table class="text-sm"><tbody>${scRows}</tbody></table>` : ''}`);
   return `<div class="mb-4 rounded-lg border-2 border-red-600 bg-red-950/50 px-4 py-3 text-red-50 font-bold">${esc(d.warning)}</div>
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-2 mb-4">${aaaCard}${calCard}</div>
+    <div class="mb-4">${scoreCard}</div>
     <div class="grid grid-cols-1 gap-4">${ladders}</div>
     <div class="mt-6 grid gap-3 sm:grid-cols-2">
       ${phaseNote('Release calendar (CPI, PCE, payrolls, claims, GDP, FOMC) with consensus and strike-by-strike surprise maps: Phase 2.')}
@@ -430,8 +442,8 @@ function ladderCard(l, i, opps) {
     <summary class="cursor-pointer"><span class="font-semibold">${esc(l.title || l.event_ticker)}</span>
       <span class="text-xs text-ink-400 ml-2">resolves ${esc(l.resolution_date || '?')} · closes ${esc(l.close_hst || '?')} · <span class="font-mono">${esc(l.series_ticker)}</span></span></summary>
     <div class="flex flex-wrap gap-x-6 gap-y-2 my-3">
-      ${stat('Kalshi implied median', l.implied_median != null ? '$' + l.implied_median.toFixed(3) : esc(l.median_note))}
-      ${stat('Model mean', m.ok && m.mu != null ? '$' + m.mu.toFixed(3) : '—')}
+      ${stat('Kalshi implied median', l.implied_median != null ? '$' + l.implied_median.toFixed(4) : esc(l.median_note))}
+      ${stat('Model mean', m.ok && m.mu != null ? '$' + m.mu.toFixed(4) : '—')}
       ${stat('Fair blend', `${Math.round(l.model_weight * 100)}% model / ${Math.round((1 - l.model_weight) * 100)}% Kalshi`)}
       ${stat('Model sigma', m.ok && m.sigma != null ? (m.sigma * 100).toFixed(2) + '¢' : '—')}
       ${stat('Horizon', m.horizon != null ? m.horizon + ' day(s)' : '—')}
@@ -452,7 +464,7 @@ function bindEcon(root) {
   const hist = d.aaa?.history || [];
   if (hist.length) {
     lineChart('aaa-chart', hist.map((h) => h.date.slice(5)), [{ label: 'AAA regular', data: hist.map((h) => h.value), borderColor: COLORS.fair, points: hist.length < 20 }],
-      { yFmt: (v) => '$' + Number(v).toFixed(2), tip: (c) => ` AAA: $${c.parsed.y.toFixed(3)}` });
+      { yFmt: (v) => '$' + Number(v).toFixed(2), tip: (c) => ` AAA: $${c.parsed.y.toFixed(4)}` });
   } else {
     const el = $('#aaa-chart'); if (el) el.parentElement.innerHTML = '<div class="text-xs text-ink-500 py-6">No AAA history yet. It fills from the AAA pull and from settled Kalshi gas markets.</div>';
   }
@@ -621,8 +633,8 @@ function bindTrades(root) {
 const SETTING_FIELDS = [
   ['Bankroll and sizing', [['bankroll', 'Starting bankroll ($)'], ['kelly_fraction', 'Kelly fraction (0.25 = quarter Kelly)'], ['per_strike_cap_pct', 'Per-strike cap (% of bankroll)'], ['correlated_cap_pct', 'Correlated cap (% of bankroll)']]],
   ['Tier gates', [['tiers.s_min_edge_pts', 'S: edge above (pts)'], ['tiers.s_min_net_ev_pct', 'S: net EV above (%)'], ['tiers.g_min_edge_pts', 'G: edge at least (pts)'], ['tiers.g_min_net_ev_pct', 'G: net EV at least (%)'], ['tiers.g_size_multiplier', 'G size multiplier'], ['tiers.w_min_edge_pts', 'Watch: edge at least (pts)']]],
-  ['Kalshi fees', [['fees.taker_rate', 'Taker rate'], ['fees.maker_rate', 'Maker rate (markets with maker fees)'], ['fees.index_taker_rate', 'Index market taker rate'], ['fees.assume_maker_fee_when_unknown', 'Assume maker fee when series fee type unknown (true/false)']]],
-  ['Gas model', [['gas.model_weight', 'Model weight vs Kalshi ladder probability (0-1)'], ['gas.drift_weight', 'Drift weight on last 3 daily changes'], ['gas.min_history_days', 'Minimum AAA daily changes before rating'], ['gas.sigma_floor', 'Daily sigma floor ($)'], ['gas.calibration_horizon_hours', 'Calibration: hours before close']]],
+  ['Kalshi fees', [['fees.taker_rate', 'Taker rate'], ['fees.maker_rate', 'Maker rate when a series fee type is unknown'], ['fees.rounding_precision', 'Fee rounding ($0.0001 direct member, 0.01 non-direct)'], ['fees.index_taker_rate', 'Index market taker rate'], ['fees.assume_maker_fee_when_unknown', 'Assume maker fee when series fee type unknown (true/false)']]],
+  ['Gas model', [['gas.model_weight', 'Model weight vs Kalshi ladder probability (0-1)'], ['gas.drift_weight', 'Drift weight on last 3 daily changes'], ['gas.min_history_days', 'Minimum AAA daily changes before rating'], ['gas.sigma_floor', 'Daily sigma floor ($)'], ['gas.calibration_horizon_hours', 'Calibration: hours before close'], ['gas.min_graded_days', 'Graded days the model needs before rating above Watch']]],
   ['Staleness (minutes)', [['staleness_minutes.kalshi_scan', 'Kalshi price'], ['staleness_minutes.espn_nfl', 'ESPN line'], ['staleness_minutes.odds_api', 'Odds API lines'], ['staleness_minutes.manual_lines', 'Manual lines'], ['staleness_minutes.aaa', 'AAA']]],
 ];
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);

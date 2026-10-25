@@ -19,7 +19,8 @@ def _env(name: str, default: str = "") -> str:
 
 
 DATABASE_URL = _env("DATABASE_URL") or f"sqlite:///{ROOT / 'data' / 'kalshi_edge.db'}"
-KALSHI_API_BASE = _env("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2").rstrip("/")
+# Kalshi recommends the external-api host; api.elections.kalshi.com is still supported (set it in .env if needed).
+KALSHI_API_BASE = _env("KALSHI_API_BASE", "https://external-api.kalshi.com/trade-api/v2").rstrip("/")
 ODDS_API_KEY = _env("ODDS_API_KEY")
 ODDS_API_BASE = _env("ODDS_API_BASE", "https://api.the-odds-api.com/v4").rstrip("/")
 ESPN_NFL_SCOREBOARD = _env(
@@ -32,20 +33,23 @@ SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in ("1", "true", "
 HTTP_TIMEOUT_S = float(_env("HTTP_TIMEOUT_S", "20") or 20)
 LOCAL_TZ = "Pacific/Honolulu"
 
-# Kalshi fee schedule, coded as config (editable on the Settings page).
-# Source: Kalshi Fee Schedule (kalshi.com/docs/kalshi-fee-schedule.pdf):
-#   taker fee = round_up_to_cent(0.07   * C * P * (1 - P))   general markets
-#   taker fee = round_up_to_cent(0.035  * C * P * (1 - P))   S&P 500 / Nasdaq-100 index markets
-#   maker fee = round_up_to_cent(0.0175 * C * P * (1 - P))   only on markets that charge maker fees
-# The public /series endpoint reports fee_type ("quadratic", "quadratic_with_maker_fees", "flat")
-# and fee_multiplier for each series; when present they override the defaults below.
+# Kalshi fee schedule, coded as config (editable on the Settings page). See app/engine/fees.py.
+#   taker fee = 0.07 x fee_multiplier x C x P x (1 - P)
+#   maker fee = taker fee x ratio for the fee_type Kalshi reports on the series (or event override)
+#   rounding  = up to $0.0001 for direct Kalshi members ($0.01 if you trade through a non-direct member)
 DEFAULT_FEES = {
     "taker_rate": 0.07,
+    "maker_ratio_by_fee_type": {
+        "quadratic": 0.0,
+        "quadratic_with_maker_fees": 0.25,
+        "quadratic_with_combo_maker_fees": 0.5,
+    },
+    # Used only when a series' fee type is unknown or not coded (conservative).
     "maker_rate": 0.0175,
     "index_taker_rate": 0.035,
     "index_series_prefixes": ["INX", "KXINX", "NASDAQ100", "KXNASDAQ100"],
-    # If we have not loaded a series' fee_type yet, assume maker fees apply (conservative).
     "assume_maker_fee_when_unknown": True,
+    "rounding_precision": 0.0001,
     # Per-series overrides, e.g. {"KXNFLGAME": {"maker_rate": 0.0175, "taker_rate": 0.07}}
     "series_overrides": {},
 }
@@ -80,7 +84,7 @@ DEFAULT_SETTINGS = {
         "full_scan_minutes": 10,
         "active_snapshot_seconds": 60,
         "espn_minutes": 15,
-        "odds_api_minutes": 120,
+        "odds_api_minutes": 240,
         "aaa_minutes": 60,
         "settle_minutes": 2,
         "edge_record_minutes": 5,
@@ -92,8 +96,12 @@ DEFAULT_SETTINGS = {
         "series": ["KXNFLGAME"],
         # Priority of fair-probability sources; the first fresh one is used.
         "fair_source_priority": ["odds_api", "manual", "espn"],
-        "odds_api_regions": "us",
+        # "us,eu" adds Pinnacle (2 credits per pull instead of 1). With the 240-minute poll that is
+        # about 360 of the free tier's 500 credits a month.
+        "odds_api_regions": "us,eu",
         "odds_api_bookmakers": "",
+        # When any of these books is in the pull, the fair price uses them instead of the all-book median.
+        "sharp_books": ["pinnacle", "circasports", "lowvig", "betonlineag"],
     },
     "gas": {
         "series": ["KXAAAGASD", "KXAAAGASW", "KXAAAGASM"],
@@ -106,8 +114,15 @@ DEFAULT_SETTINGS = {
         "min_history_days": 7,
         "sigma_lookback_days": 30,
         "sigma_floor": 0.004,
-        "calibration_backfill_days": 45,
-        "calibration_horizon_hours": 18,
+        # AAA publishes the national average to $0.0001; YES needs strictly above the strike.
+        "aaa_tick": 0.0001,
+        "calibration_backfill_days": 30,
+        # Calibration prices each settled ladder this many hours before close (6 = about noon HST, after
+        # AAA has published the prior day's value).
+        "calibration_horizon_hours": 6,
+        # The model may rate gas bets above Watch only after beating Kalshi's own prices (Brier score)
+        # over at least this many settled days.
+        "min_graded_days": 10,
     },
     "news_feeds": [],
     # Heuristic: series tickers (KX prefix removed) matching this, or prop-like titles, go to the Props board.

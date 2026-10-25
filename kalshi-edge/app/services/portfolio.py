@@ -26,7 +26,12 @@ def corr_key(series_ticker: Optional[str], event_ticker: Optional[str], gas_seri
 
 
 def _cost(t: Dict[str, Any]) -> float:
-    return round(t["contracts"] * t["limit_price"] + (t["fees"] or 0.0), 2)
+    return round(t["contracts"] * t["limit_price"] + (t["fees"] or 0.0), 4)
+
+
+def _rates_for(series_ticker: Optional[str], event_ticker: Optional[str]):
+    ev = db.fetch_one(select(db.events).where(db.events.c.event_ticker == event_ticker)) if event_ticker else None
+    return fee_rates_for(series_ticker, scanner.series_row(series_ticker), get_settings()["fees"], ev)
 
 
 def exposure_by_key(gas_series: Optional[set] = None) -> Dict[str, float]:
@@ -54,11 +59,11 @@ def create_trade(p: Dict[str, Any]) -> Dict[str, Any]:
     m = db.fetch_one(select(db.markets).where(db.markets.c.ticker == p["ticker"])) or {}
     if not m and mode == "paper":
         raise ValueError(f"Unknown ticker {p['ticker']}: paper trades need a market we have scanned")
-    settings = get_settings()
-    rates = fee_rates_for(m.get("series_ticker"), scanner.series_row(m.get("series_ticker")), settings["fees"])
+    rates = _rates_for(m.get("series_ticker"), m.get("event_ticker"))
     fee = p.get("fees")
     if fee in (None, ""):
-        fee = kalshi_fee(contracts, price, rates.maker_rate if order_type == "maker" else rates.taker_rate)
+        fee = kalshi_fee(contracts, price, rates.maker_rate if order_type == "maker" else rates.taker_rate,
+                         rates.precision)
     ts = now_ts()
     filled = mode == "real" or order_type == "taker" or bool(p.get("assume_filled"))
     row = {
@@ -108,9 +113,9 @@ def close_trade(tid: int, exit_price: float, exit_fees: Optional[float] = None) 
         raise ValueError("exit price must be between 0 and 1")
     if exit_fees is None:
         m = db.fetch_one(select(db.markets).where(db.markets.c.ticker == t["ticker"])) or {}
-        rates = fee_rates_for(t["series_ticker"], scanner.series_row(t["series_ticker"]), get_settings()["fees"])
-        exit_fees = kalshi_fee(t["contracts"], exit_price, rates.taker_rate) if m else 0.0
-    pnl = round(t["contracts"] * (exit_price - t["limit_price"]) - t["fees"] - exit_fees, 2)
+        rates = _rates_for(t["series_ticker"], t["event_ticker"])
+        exit_fees = kalshi_fee(t["contracts"], exit_price, rates.taker_rate, rates.precision) if m else 0.0
+    pnl = round(t["contracts"] * (exit_price - t["limit_price"]) - t["fees"] - exit_fees, 4)
     with db.get_engine().begin() as c:
         c.execute(update(db.trades).where(db.trades.c.id == tid).values(
             status="closed", exit_price=exit_price, exit_fees=exit_fees, closed_ts=now_ts(), realized_pnl=pnl))
@@ -176,6 +181,21 @@ def closing_side_price(ticker: str, side: str, close_ts: Optional[int]) -> Optio
     return None
 
 
+def settlement_yes_value(m: Optional[Dict[str, Any]]) -> Optional[float]:
+    """What one YES contract paid: 1 or 0 on a yes/no result, or Kalshi's settlement value
+    (e.g. $0.50 per side when an NFL game ends in a tie). None until the market has settled."""
+    if not m:
+        return None
+    if m.get("result") == "yes":
+        return 1.0
+    if m.get("result") == "no":
+        return 0.0
+    if m.get("settlement_value") is not None and (m.get("result") == "scalar"
+                                                  or m.get("status") in ("settled", "finalized", "determined")):
+        return max(0.0, min(1.0, float(m["settlement_value"])))
+    return None
+
+
 def settle_positions() -> Dict[str, int]:
     """Refresh the current state of every market we hold (markets can close early), then settle by result."""
     from ..sources import kalshi
@@ -193,16 +213,17 @@ def settle_positions() -> Dict[str, int]:
     settled = 0
     for t in db.fetch_all(select(db.trades).where(db.trades.c.status == "open")):
         m = db.fetch_one(select(db.markets).where(db.markets.c.ticker == t["ticker"]))
-        if not m or m.get("result") not in ("yes", "no"):
+        yes_value = settlement_yes_value(m)
+        if yes_value is None:
             continue
-        win = m["result"] == t["side"]
-        pnl = round(t["contracts"] * ((1.0 if win else 0.0) - t["limit_price"]) - t["fees"], 2)
+        payout = yes_value if t["side"] == "yes" else 1.0 - yes_value
+        pnl = round(t["contracts"] * (payout - t["limit_price"]) - t["fees"], 4)
         close_px = closing_side_price(t["ticker"], t["side"], m.get("close_ts"))
         clv = round(100 * (close_px - t["limit_price"]), 2) if close_px is not None else None
         with db.get_engine().begin() as c:
             c.execute(update(db.trades).where(db.trades.c.id == t["id"]).values(
-                status="settled", settlement_result=m["result"], closed_ts=now, realized_pnl=pnl,
-                exit_price=1.0 if win else 0.0, exit_fees=0.0, closing_price=close_px, clv_pts=clv))
+                status="settled", settlement_result=m.get("result") or f"{yes_value:g}", closed_ts=now,
+                realized_pnl=pnl, exit_price=payout, exit_fees=0.0, closing_price=close_px, clv_pts=clv))
         settled += 1
     return {"settled": settled, "refresh_errors": refresh_errors}
 

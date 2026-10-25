@@ -66,59 +66,83 @@ def aaa_rows(limit: int = 60) -> List[Dict[str, Any]]:
     return db.fetch_all(select(db.aaa_prices).order_by(db.aaa_prices.c.date.desc(), db.aaa_prices.c.source).limit(limit))
 
 
-def _settled_by_event(series_ticker: str) -> Tuple[Dict[str, List[Dict[str, Any]]], Optional[int]]:
-    raw, pulls = kalshi.get_markets({"series_ticker": series_ticker, "status": "settled"}, max_pages=20)
+def _settled_by_event(series_ticker: str) -> Tuple[Dict[str, List[Dict[str, Any]]], Optional[int], List[str]]:
+    """Settled markets from the live endpoint plus Kalshi's /historical archive (markets settled before
+    the historical cutoff are only served there). Each market is tagged with where it came from."""
     out: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for m in raw:
-        pm = kalshi.parse_market(m)
-        out[pm["event_ticker"]].append(pm)
-    return out, (pulls[-1] if pulls else None)
+    seen = set()
+    errors: List[str] = []
+    last_pull = None
+    for label, fetch in (("live", lambda: kalshi.get_markets({"series_ticker": series_ticker, "status": "settled"},
+                                                            max_pages=20)),
+                         ("historical", lambda: kalshi.get_historical_markets({"series_ticker": series_ticker},
+                                                                              max_pages=20))):
+        try:
+            raw, pulls = fetch()
+        except FetchError as e:
+            errors.append(f"{series_ticker} {label}: {e}")
+            continue
+        last_pull = pulls[-1] if pulls else last_pull
+        for m in raw:
+            pm = kalshi.parse_market(m)
+            if pm["ticker"] in seen:
+                continue
+            seen.add(pm["ticker"])
+            pm["_archive"] = label == "historical"
+            out[pm["event_ticker"]].append(pm)
+    return out, last_pull, errors
+
+
+def _actual_of(mkts: List[Dict[str, Any]]) -> Optional[float]:
+    for m in mkts:
+        v = m.get("expiration_value")
+        if v:
+            try:
+                return float(str(v).replace("$", "").replace(",", ""))
+            except ValueError:
+                continue
+    return None
 
 
 def backfill(settings: Optional[Dict[str, Any]] = None, with_candles: bool = True) -> Dict[str, Any]:
     """Pull settled gas markets: their expiration_value is the AAA print Kalshi settled on.
-    Then rebuild the ladder as it stood `calibration_horizon_hours` before close from hourly candles."""
+    Then rebuild each ladder as it stood `calibration_horizon_hours` before close from hourly candles."""
     s = settings or get_settings()
     cfg = s["gas"]
     series_list = sorted(scanner.gas_series_set(s))
     actuals = marks = 0
     errors: List[str] = []
-    cutoff = now_ts() - int(cfg["calibration_backfill_days"]) * 86400
+    oldest = now_ts() - int(cfg["calibration_backfill_days"]) * 86400
+    # Pass 1: store every AAA print Kalshi settled on, so pass 2 can price each day with full prior history.
+    to_grade = []
     for st in series_list:
-        try:
-            events_map, pull_id = _settled_by_event(st)
-        except FetchError as e:
-            errors.append(f"{st}: {e}")
-            continue
+        events_map, pull_id, errs = _settled_by_event(st)
+        errors.extend(errs)
         for ev, mkts in events_map.items():
             d = g.parse_ticker_date(ev)
-            vals = {m["expiration_value"] for m in mkts if m.get("expiration_value")}
-            actual = None
-            for v in vals:
-                try:
-                    actual = float(str(v).replace("$", ""))
-                    break
-                except ValueError:
-                    continue
+            actual = _actual_of(mkts)
             if d is None or actual is None:
                 continue
             _store_aaa(d.isoformat(), actual, "kalshi_settlement", pull_id, f"{ev} expiration_value")
             actuals += 1
-            close = max((m["close_ts"] or 0) for m in mkts)
-            if not with_candles or close < cutoff:
-                continue
-            if db.fetch_one(select(db.ladder_marks.c.id).where(and_(
-                    db.ladder_marks.c.event_ticker == ev, db.ladder_marks.c.source == "candles"))):
-                continue
-            as_of = close - int(cfg["calibration_horizon_hours"]) * 3600
-            try:
-                mark = _ladder_from_candles(st, mkts, as_of)
-            except FetchError as e:
-                errors.append(f"{ev}: {e}")
-                continue
-            if mark:
-                _store_mark(ev, st, d, as_of, "candles", mark, actual)
-                marks += 1
+            to_grade.append((st, ev, d, actual, mkts))
+    # Pass 2: rebuild each recent ladder as it stood before close and grade it.
+    for st, ev, d, actual, mkts in sorted(to_grade, key=lambda x: x[2]):
+        close = max((m["close_ts"] or 0) for m in mkts)
+        if not with_candles or close < oldest:
+            continue
+        if db.fetch_one(select(db.ladder_marks.c.id).where(and_(
+                db.ladder_marks.c.event_ticker == ev, db.ladder_marks.c.source == "candles"))):
+            continue
+        as_of = close - int(cfg["calibration_horizon_hours"]) * 3600
+        try:
+            mark = _ladder_from_candles(st, mkts, as_of)
+        except FetchError as e:
+            errors.append(f"{ev}: {e}")
+            continue
+        if mark:
+            _store_mark(ev, st, d, as_of, "candles", mark, actual)
+            marks += 1
     if errors and not actuals:
         raise RuntimeError("; ".join(errors[:3]))
     return {"actuals": actuals, "calibration_marks": marks, "series": series_list, "errors": errors[:5]}
@@ -127,28 +151,44 @@ def backfill(settings: Optional[Dict[str, Any]] = None, with_candles: bool = Tru
 def _ladder_from_candles(series_ticker: str, mkts: List[Dict[str, Any]], as_of: int) -> Optional[Dict[str, Any]]:
     priced = []
     for m in mkts:
-        candles, _ = kalshi.get_candlesticks(series_ticker, m["ticker"], as_of - 6 * 3600, as_of + 60, 60)
+        start, end = as_of - 6 * 3600, as_of + 60
+        if m.get("_archive"):
+            candles, _ = kalshi.get_historical_candlesticks(m["ticker"], start, end, 60)
+        else:
+            candles, _ = kalshi.get_candlesticks(series_ticker, m["ticker"], start, end, 60)
         before = [c for c in candles if (c.get("end_period_ts") or 0) <= as_of + 60]
         mid = kalshi.candle_mid(before[-1]) if before else None
         if mid is not None:
             priced.append(dict(m, yes_bid=None, yes_ask=None, last_price=mid))
+    return _mark_from_priced(priced)
+
+
+def _mark_from_priced(priced: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     lad = g.ladder_points(priced)
-    med, how = g.implied_median(lad.get("strikes", []), lad.get("survival", []))
     if lad["kind"] == "empty":
         return None
-    return {"ladder": lad, "median": med, "how": how}
+    med, how = g.implied_median(lad.get("strikes", []), lad.get("survival", []))
+    kp = g.market_yes_probs(priced)
+    rows = [{"ticker": m["ticker"], "strike_type": m.get("strike_type"), "floor_strike": m.get("floor_strike"),
+             "cap_strike": m.get("cap_strike"), "market_yes": kp.get(m["ticker"])} for m in priced]
+    return {"ladder": lad, "median": med, "how": how, "rows": rows}
+
+
+def history_known_at(hist: List[Tuple[date, float]], as_of: int, before: date) -> List[Tuple[date, float]]:
+    """AAA values a trader could have seen at `as_of`: dates before the as-of day (ET), plus the as-of day
+    itself once AAA has published it (after 10am ET). Never the resolution date or later."""
+    at = datetime.fromtimestamp(as_of, tz=ET)
+    return [(dd, v) for dd, v in hist if dd < before and (dd < at.date() or (dd == at.date() and at.hour >= 10))]
 
 
 def _store_mark(ev: str, st: str, d: date, as_of: int, source: str, mark: Dict[str, Any], actual: float) -> None:
-    hist = [(dd, v) for dd, v in aaa_history() if dd < datetime.fromtimestamp(as_of, tz=ET).date() + timedelta(days=1)
-            and dd < d]
-    dist = g.model_distribution(hist, d, get_settings()["gas"])
+    dist = g.model_distribution(history_known_at(aaa_history(), as_of, d), d, get_settings()["gas"])
     model_med = dist.get("mu") if dist.get("ok") and dist.get("mu") is not None else None
     db.upsert(db.ladder_marks, ["event_ticker", "source"], {
         "event_ticker": ev, "series_ticker": st, "resolution_date": d.isoformat(), "as_of_ts": as_of,
         "source": source, "implied_median": mark["median"], "model_median": model_med, "actual": actual,
         "ladder_json": db.dumps({"strikes": mark["ladder"].get("strikes"), "survival": mark["ladder"].get("survival"),
-                                 "how": mark["how"]}),
+                                 "how": mark["how"], "rows": mark.get("rows", [])}),
     })
 
 
@@ -168,7 +208,7 @@ def mark_from_snapshots() -> Dict[str, int]:
                                                                 db.ladder_marks.c.source == "snapshots"))):
             continue
         d = g.parse_ticker_date(ev)
-        actual = next((float(m["expiration_value"]) for m in mkts if m.get("expiration_value")), None)
+        actual = _actual_of(mkts)
         if d is None or actual is None:
             continue
         as_of = max(m["close_ts"] or 0 for m in mkts) - horizon
@@ -179,11 +219,10 @@ def mark_from_snapshots() -> Dict[str, int]:
                 .order_by(db.market_snapshots.c.ts.desc()).limit(1))
             if snap and snap["ts"] >= as_of - 3 * 3600:
                 priced.append(dict(m, yes_bid=snap["yes_bid"], yes_ask=snap["yes_ask"], last_price=snap["last_price"]))
-        lad = g.ladder_points(priced)
-        if lad["kind"] == "empty":
+        mark = _mark_from_priced(priced)
+        if not mark:
             continue
-        med, how = g.implied_median(lad["strikes"], lad["survival"])
-        _store_mark(ev, mkts[0]["series_ticker"], d, as_of, "snapshots", {"ladder": lad, "median": med, "how": how}, actual)
+        _store_mark(ev, mkts[0]["series_ticker"], d, as_of, "snapshots", mark, actual)
         done += 1
     return {"marks": done}
 
@@ -196,6 +235,39 @@ def calibration() -> Dict[str, Any]:
         "records": [{k: r[k] for k in ("event_ticker", "resolution_date", "source", "implied_median", "model_median",
                                        "actual")} for r in marks[-90:]],
     }
+
+
+_score_cache: Dict[str, Any] = {"ts": 0, "key": None, "data": None}
+
+
+def model_score(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Out-of-sample check on settled days: Brier score of fair = w x model + (1 - w) x Kalshi for several w,
+    using only AAA values known at the time each ladder was priced. w = 0 is 'just trust Kalshi'."""
+    s = settings or get_settings()
+    cfg = s["gas"]
+    key = db.dumps([cfg, db.fetch_one(select(db.ladder_marks.c.id).order_by(db.ladder_marks.c.id.desc()).limit(1))])
+    if _score_cache["key"] == key and now_ts() - _score_cache["ts"] < 600:
+        return _score_cache["data"]
+    hist = aaa_history()
+    records = []
+    for r in db.fetch_all(select(db.ladder_marks)):
+        rows = (json.loads(r["ladder_json"] or "{}")).get("rows") or []
+        if not rows or r["actual"] is None:
+            continue
+        d = g.to_date(r["resolution_date"])
+        dist = g.model_distribution(history_known_at(hist, r["as_of_ts"], d), d, cfg)
+        if not dist.get("ok") or dist.get("mu") is None:
+            continue
+        for row in rows:
+            kp = row.get("market_yes")
+            mp = g.model_prob(row, dist, float(cfg.get("aaa_tick", 0.0001)))
+            y = g.outcome_yes(row, r["actual"])
+            if kp is None or mp is None or y is None:
+                continue
+            records.append((mp, kp, y, r["event_ticker"]))
+    data = g.blend_scores(records, float(cfg["model_weight"]), int(cfg.get("min_graded_days", 10)))
+    _score_cache.update(ts=now_ts(), key=key, data=data)
+    return data
 
 
 def _resolution_date(ev: str, mkts: List[Dict[str, Any]]) -> Optional[date]:
@@ -217,6 +289,8 @@ def board() -> Dict[str, Any]:
     latest = tr.get("latest")
     stale_min = settings["staleness_minutes"]["kalshi_scan"]
     now = now_ts()
+    tick = float(cfg.get("aaa_tick", 0.0001))
+    score = model_score(settings)
 
     by_event: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for m in scanner.open_markets(gs):
@@ -225,6 +299,7 @@ def board() -> Dict[str, Any]:
     ladders, opps = [], []
     for ev, mkts in by_event.items():
         rd = _resolution_date(ev, mkts)
+        ev_row = scanner.event_row(ev)
         lad = g.ladder_points(mkts)
         med, how = g.implied_median(lad.get("strikes", []), lad.get("survival", []))
         dist = g.model_distribution(hist, rd, cfg) if rd else {"ok": False, "why": "no resolution date"}
@@ -240,13 +315,13 @@ def board() -> Dict[str, Any]:
                    "volume": m["volume"], "oi": m["open_interest"], "model_yes": None, "market_yes": None,
                    "fair_yes": None}
             if dist.get("ok"):
-                py = g.model_prob(m, dist)
+                py = g.model_prob(m, dist, tick)
                 kp = market_p.get(m["ticker"])
                 row["model_yes"] = round(py, 4) if py is not None else None
                 row["market_yes"] = round(kp, 4) if kp is not None else None
                 if dist.get("known") is not None:
                     fy = py
-                    fair_steps[m["ticker"]] = [f"AAA already printed {dist['known']:.3f} for the resolution date -> "
+                    fair_steps[m["ticker"]] = [f"AAA already printed {dist['known']:.4f} for the resolution date -> "
                                                f"P(YES) = {py:.0f}"]
                 else:
                     fy = g.blend_fair(py, kp, w)
@@ -262,7 +337,7 @@ def board() -> Dict[str, Any]:
                 continue
             age = (now - (m["updated_ts"] or 0)) / 60
             for side, q in (("yes", row["fair_yes"]), ("no", 1 - row["fair_yes"])):
-                warnings, force, cap = [], None, None
+                warnings, force, cap, cap_why = [], None, None, ""
                 if age > stale_min:
                     force = f"Pass: Kalshi price is stale ({age:.0f} min old)."
                 if latest is not None:
@@ -271,15 +346,19 @@ def board() -> Dict[str, Any]:
                         force = "Pass: " + trap
                         warnings.append(trap)
                 if dist.get("known") is not None:
-                    cap = "W"
+                    cap, cap_why = "W", "AAA already printed the resolution-date value"
                     warnings.append("AAA has already published the resolution-date value; verify the rules' exact print "
                                     "time before acting.")
+                elif not score.get("adds_value"):
+                    cap, cap_why = "W", "the gas model has not yet beaten Kalshi's own prices on settled days"
+                    warnings.append("Model check: " + score.get("verdict", ""))
                 subj = _side_text(m, side)
                 fair_info = {"steps": fair_steps.get(m["ticker"], []),
                              "plain": f"Our AAA model (official AAA history) blended {w:g}/{1 - w:g} with Kalshi's own ladder",
                              "source": "aaa_model", "as_of": tr.get("latest_date")}
                 opp = evaluate(m, side, q, fair_info, settings, bank, scanner.series_row(m["series_ticker"]),
-                               exposure, NONE, "", "gas", warnings, force_pass=force, max_tier=cap, plain_subject=subj)
+                               exposure, NONE, "", "gas", warnings, force_pass=force, max_tier=cap, plain_subject=subj,
+                               event_row=ev_row, cap_reason=cap_why)
                 opp["board"] = "Commodities"
                 opp["resolution_date"] = rd.isoformat() if rd else None
                 opps.append(opp)
@@ -301,7 +380,7 @@ def board() -> Dict[str, Any]:
         "aaa": {"latest": latest, "latest_date": tr.get("latest_date"), "trends": tr,
                 "history": [{"date": d.isoformat(), "value": v} for d, v in hist[-60:]],
                 "rows": aaa_rows(20)},
-        "ladders": ladders, "calibration": calibration(),
+        "ladders": ladders, "calibration": calibration(), "model_score": score,
         "opportunities": sorted(best.values(), key=sort_key), "series": sorted(gs),
         "warning": ("DECELERATION TRAP: a slowing rise is not a fall. Kalshi's implied gas medians have been well "
                     "calibrated, so this app will not recommend a bet that only wins if a slowdown turns into a drop."),

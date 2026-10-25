@@ -38,8 +38,10 @@ There is no Kalshi login, no order placement, and no money movement anywhere in 
 ### Optional: The Odds API key
 1. Get a free key at https://the-odds-api.com. The free tier is 500 credits a month.
 2. Open `.env` and set `ODDS_API_KEY=your_key`.
-3. Restart with Ctrl+C, then `./start.sh`. NFL fair prices now use the median of the devigged US books.
-   The default 120-minute poll uses about 360 credits a month. Change it under Settings.
+3. Restart with Ctrl+C, then `./start.sh`. The default pull asks for US and EU books (`us,eu`), which adds
+   Pinnacle. When a sharp book (Pinnacle, Circa, LowVig, BetOnline) is in the pull, its devigged line is the
+   fair price; otherwise it's the median of all books. Each pull costs 2 credits, and the default 240-minute
+   poll uses about 360 credits a month. Use "Run now" on the Audit tab to refresh right before you trade.
 
 Without a key, the fair price falls back in this order:
 1. lines you enter by hand on the Sports tab;
@@ -53,9 +55,14 @@ This runs every data job once against the live public sources and prints a sampl
 - markets per board;
 - NFL games with Kalshi prices and fair values;
 - the AAA value, ladders, and implied median;
-- calibration;
+- calibration and the gas model check;
+- the fee type Kalshi reports for each series;
 - the top 10 edges, with the full math for the best one;
 - data freshness for each source.
+
+It ends with a **VERIFY** checklist: one PASS/FAIL line for each assumption the app depends on, such as the
+API host, price fields, price grid, fee types, NFL and gas tickers, the historical archive, AAA, and ESPN.
+Each FAIL comes with a hint about what to do.
 
 It writes into the app's database, so the dashboard is populated afterwards. Add `--temp` to use a throwaway
 database instead.
@@ -64,12 +71,15 @@ database instead.
 ```
 ./start.sh test
 ```
-There are 63 tests:
-- fee math, devig math, Kelly sizing, tier logic, maker price;
-- gas ladder calibration, implied median, the trap rule, and the model;
-- parsers for each source;
-- an end-to-end test of scan, snapshots, NFL edges, gas, paper fill, settlement, CSV export, and stale-data
-  handling, run against a mocked Kalshi API.
+There are 77 tests:
+- fee math (fee types, event overrides, $0.0001 rounding), devig math, Kelly sizing, tier logic;
+- the maker price on Kalshi's price grid, and sharp-book fair prices;
+- gas ladder calibration, implied median, the trap rule, the model, the no-look-ahead history, and the
+  model-vs-Kalshi score;
+- parsers for each source in Kalshi's current format (`*_dollars`, `*_fp`, `price_ranges`,
+  `settlement_value_dollars`, historical candles);
+- an end-to-end test of scan, snapshots, NFL edges, gas with the historical archive, paper fill,
+  settlement, CSV export, and stale-data handling, run against a mocked Kalshi API in its current format.
 
 ## What's on screen
 
@@ -89,17 +99,28 @@ All times are Pacific/Honolulu.
 ## The rules as coded
 
 ### Fees
-- The Kalshi fee schedule is coded as config in `app/config.py` and editable in Settings.
-  - Taker fee: `roundup(0.07 × C × P × (1−P))` to the next cent.
-  - Index markets (INX/NASDAQ100): 0.035.
-  - Maker fee: 0.0175, only on series whose `fee_type` is `quadratic_with_maker_fees`.
-- `fee_type` and `fee_multiplier` are read from Kalshi's public `/series` endpoint. Until a series is loaded,
-  the maker fee is assumed (conservative).
-- Every headline EV is net of the rounded fee at the recommended contract count.
+The Kalshi fee schedule is coded as config in `app/config.py` and editable in Settings.
+- **Taker fee:** `0.07 × fee_multiplier × C × P × (1−P)`.
+- **Maker fee:** the taker fee times a ratio set by the series' `fee_type`:
+
+  | `fee_type` | Maker fee |
+  |---|---|
+  | `quadratic` | 0 |
+  | `quadratic_with_maker_fees` | 0.25 × taker (0.0175 at multiplier 1) |
+  | `quadratic_with_combo_maker_fees` | 0.5 × taker |
+
+- **Where the fee type comes from:** it's read live from Kalshi's `/series`. An event's `fee_type_override`
+  wins over the series. Until a series loads, or if its type is unknown, the conservative defaults apply:
+  0.0175 maker fee, and 0.035 taker for INX/NASDAQ100.
+- **Rounding:** each order's fee is rounded up to $0.0001, the precision Kalshi uses for direct members. If
+  you trade through a non-direct member, set it to 0.01 in Settings.
+- **Headline EV:** always net of the fee at the recommended contract count.
 
 ### Maker price
-- The app posts one tick above the best bid, never at or through the ask.
-- With a one-tick spread, it joins the bid.
+- The app reads each market's valid price grid from Kalshi (`price_ranges`). Some markets trade in 0.1¢ or
+  0.01¢ steps.
+- It posts one grid step above the best bid, never at or through the ask. With a one-step spread, it joins
+  the bid.
 - The taker ask is shown next to it, along with what taking it would do to EV.
 
 ### Tiers (`app/engine/tiers.py`)
@@ -135,8 +156,10 @@ other one.
 
 ### NFL fair price
 - Proportional devig of each book: implied ÷ sum of implied.
-- Then the median across books. The steps are shown line by line.
+- If a sharp book is in the pull, its line is the fair price. Otherwise it's the median across books. The
+  steps are shown line by line.
 - A game that has started is Pass: the pregame price no longer applies.
+- A tied game settles at Kalshi's settlement value ($0.50 per side), and the trade log handles that.
 
 ### AAA gas fair price
 **Model** (from official AAA history only):
@@ -145,12 +168,21 @@ other one.
 
 **Fair price:** 50% model probability (clamped to 1–99%) + 50% Kalshi's own monotone-smoothed ladder
 probability. Kalshi's implied medians have been well calibrated, so the model is shrunk toward them.
+"Above" means strictly above: an AAA print equal to the strike resolves NO. The model applies that
+half-tick correction on AAA's $0.0001 grid.
+
+**Model check:** before any gas bet can rate above Watch, the blend has to beat Kalshi alone on Brier score
+across at least 10 settled days. Each day is priced using only AAA values that were public at the time (no
+look-ahead). The Commodities tab shows the scores for each model weight and the best weight on your
+history. Until the model passes, gas edges stay capped at Watch with the reason shown.
 
 **Deceleration trap:** if AAA rose over 3 days, any bet that wins only if the price falls below today's
 AAA is forced to Pass with a bold warning. The mirror rule applies to falling trends.
 
-**Calibration:** the ladder as it stood 18 hours before close (rebuilt from Kalshi hourly candles), and our
-own snapshots going forward, are graded against the AAA value Kalshi settled on.
+**Calibration:** each settled ladder is rebuilt as it stood 6 hours before close from Kalshi's hourly
+candles, about noon HST, after AAA has published the prior day. Our own snapshots add the same record going
+forward. Each is graded against the AAA value Kalshi settled on. Markets settled before Kalshi's historical
+cutoff are read from the `/historical` endpoints, so the backfill covers the full 30 days.
 
 ### Snapshots and history
 Snapshotting every open Kalshi market every minute would add tens of millions of rows a day. Instead:

@@ -19,6 +19,25 @@ def test_kalshi_parse_market_dollar_and_cent_fields_agree():
     assert a["close_ts"] == 1792959900
 
 
+def test_kalshi_current_shape_grid_and_settlement():
+    m = kalshi.parse_market({
+        "ticker": "KXAAAGASD-26OCT24-4.270", "event_ticker": "KXAAAGASD-26OCT24", "yes_bid_dollars": "0.4010",
+        "yes_ask_dollars": "0.4350", "last_price_dollars": "0.0000", "volume_fp": "12.50", "open_interest_fp": "3.00",
+        "price_level_structure": "deci_cent", "price_ranges": [{"start": "0.0010", "end": "0.9990", "step": "0.0010"}],
+        "status": "finalized", "result": "", "settlement_value_dollars": "0.5000", "strike_type": "greater",
+        "floor_strike": 4.27})
+    assert (m["yes_bid"], m["yes_ask"], m["last_price"]) == (0.401, 0.435, None)
+    assert m["volume"] == 12.5 and m["tick_size"] == 0.001
+    assert m["price_ranges"] == "[[0.001, 0.999, 0.001]]"
+    assert m["settlement_value"] == 0.5 and m["result"] is None
+
+
+def test_kalshi_event_fee_override():
+    e = kalshi.parse_event({"event_ticker": "KXNFLGAME-X", "fee_type_override": "quadratic_with_maker_fees",
+                            "fee_multiplier_override": "1"})
+    assert e["fee_type_override"] == "quadratic_with_maker_fees" and e["fee_multiplier_override"] == 1.0
+
+
 def test_kalshi_empty_sides_become_none():
     m = kalshi.parse_market({"ticker": "X-1", "event_ticker": "X", "yes_bid": 0, "yes_ask": 100, "last_price": 0})
     assert m["yes_bid"] is None and m["yes_ask"] is None and m["last_price"] is None
@@ -28,6 +47,8 @@ def test_kalshi_candle_mid():
     assert kalshi.candle_mid({"yes_bid": {"close": 40}, "yes_ask": {"close": 44}}) == 0.42
     assert kalshi.candle_mid({"yes_bid": {"close_dollars": "0.40"}, "yes_ask": {"close_dollars": "0.44"}}) == 0.42
     assert kalshi.candle_mid({"yes_bid": {"close": 0}, "yes_ask": {"close": 44}, "price": {"close": 30}}) is None
+    # /historical candles: no _dollars suffix, but values are still dollars
+    assert kalshi.candle_mid({"yes_bid": {"close": "0.4000"}, "yes_ask": {"close": "0.4400"}}) == 0.42
 
 
 def test_team_matching():
@@ -76,6 +97,11 @@ def test_aaa_parse():
     assert out["value"] == 3.123
     assert out["date"] == "2026-10-23"
     assert out["table"]["Yesterday Avg."] == 3.118
+
+
+def test_aaa_parse_four_decimals():
+    page = "<p>Today’s AAA National Average $4.2926</p><p>Price as of 10/23/26</p>"
+    assert aaa.parse_national_average(page)["value"] == 4.2926
 
 
 def test_aaa_parse_fails_loudly():

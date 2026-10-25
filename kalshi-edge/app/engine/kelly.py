@@ -46,7 +46,7 @@ def size_position(
         contracts -= 1
         fee = fee_fn(contracts, price, fee_rate)
 
-    dollars = round(contracts * price, 2)
+    dollars = round(contracts * price, 4)
     steps = [
         f"Cost per contract = price {price:.4f} + fee {fee_pc:.4f} = {cost:.4f}",
         f"Full Kelly = (q - cost) / (1 - cost) = ({q:.4f} - {cost:.4f}) / (1 - {cost:.4f}) = {f_full:.4f}",
@@ -59,7 +59,7 @@ def size_position(
         "contracts": contracts,
         "dollars": dollars,
         "fee": fee,
-        "max_loss": round(dollars + fee, 2),
+        "max_loss": round(dollars + fee, 4),
         "kelly_full": f_full,
         "kelly_used": f_used,
         "binding": binding,
