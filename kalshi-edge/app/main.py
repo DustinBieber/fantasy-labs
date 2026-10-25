@@ -1,11 +1,13 @@
 """FastAPI entry point: serves the dashboard, the JSON API, and starts the scheduler."""
 from __future__ import annotations
 
+import base64
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
@@ -26,6 +28,27 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Kalshi Edge", version="1.0-phase1", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def password_gate(request: Request, call_next):
+    """If APP_PASSWORD is set, every page and API call needs it (any username). The AI trader can't go live
+    without it, so nobody else on your network can flip it to real money."""
+    if config.APP_PASSWORD:
+        ok = False
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("basic "):
+            try:
+                _, _, pw = base64.b64decode(header[6:]).decode().partition(":")
+                ok = hmac.compare_digest(pw.encode(), config.APP_PASSWORD.encode())
+            except (ValueError, UnicodeDecodeError):
+                ok = False
+        if not ok:
+            return Response("Password required", status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="Kalshi Edge"'})
+    return await call_next(request)
+
+
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

@@ -13,7 +13,7 @@ from .. import config, db
 from ..settings_store import get_settings
 from ..sources import odds_api
 from ..timeutil import age_minutes, hst, now_ts
-from . import edges, follow_service, gas_service, nfl_service, portfolio, scanner
+from . import autotrader, edges, follow_service, gas_service, nfl_service, portfolio, scanner
 
 log = logging.getLogger("kalshi_edge.jobs")
 
@@ -39,6 +39,8 @@ JOBS: Dict[str, Dict[str, Any]] = {
     "follow_discover": {"label": "Grade bettors (Polymarket)", "fn": follow_service.discover, "stale": None},
     "follow_picks": {"label": "Followed bettors' picks", "fn": follow_service.refresh_picks, "stale": "follow_picks"},
     "settle": {"label": "Paper fills + settlement", "fn": _settle_all, "stale": None},
+    "autotrader": {"label": "AI trader cycle", "fn": autotrader.cycle, "stale": None},
+    "benchmark": {"label": "S&P 500 (SPY) prices", "fn": autotrader.refresh_spy, "stale": None},
     "edge_record": {"label": "Edge history", "fn": edges.record, "stale": None},
 }
 
@@ -120,6 +122,8 @@ def start() -> Optional[BackgroundScheduler]:
     add("follow_discover", hours=iv["follow_discover_hours"], first=120)
     add("follow_picks", minutes=iv["follow_picks_minutes"], first=240)
     add("settle", minutes=iv["settle_minutes"], first=90)
+    add("benchmark", hours=6, first=45)
+    add("autotrader", minutes=iv.get("autotrader_minutes", 2), first=180)
     add("edge_record", minutes=iv["edge_record_minutes"], first=150)
     sch.start()
     _scheduler = sch

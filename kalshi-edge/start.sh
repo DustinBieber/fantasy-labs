@@ -3,11 +3,17 @@
 #   ./start.sh          install (first run only) and start the dashboard
 #   ./start.sh test     run the test suite
 #   ./start.sh smoke    pull live public data once and print sample output
+#   ./start.sh install  run it in the background on a Mac (starts at login, restarts itself, keeps the Mac awake)
+#   ./start.sh restart | status | logs | uninstall
 set -euo pipefail
 cd "$(dirname "$0")"
 
+case "${1:-}" in
+  install|restart|uninstall|status|logs) exec bash scripts/service.sh "$1" ;;
+esac
+
 if [ ! -f .env ]; then
-  cp .env.example .env
+  cp .env.example .env && chmod 600 .env
   echo "Created .env from .env.example (add ODDS_API_KEY there if you have one)."
 fi
 
@@ -63,6 +69,6 @@ case "${1:-run}" in
     exec .venv/bin/python -m uvicorn app.main:app --host "$HOST" --port "$PORT"
     ;;
   *)
-    echo "Usage: ./start.sh [run|test|smoke]"; exit 1
+    echo "Usage: ./start.sh [run|test|smoke|install|restart|status|logs|uninstall]"; exit 1
     ;;
 esac

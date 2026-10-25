@@ -268,6 +268,37 @@ trades = Table(
     Column("clv_pts", Float),
     Column("fill_note", Text),
     Column("combo_legs", Text),  # JSON [{ticker, side, label}] for parlays (Kalshi Combos)
+    Column("source", String(10), default="manual"),  # manual | auto (the AI trader)
+    Column("external_order_id", String(80)),
+    Column("client_order_id", String(80)),
+)
+
+autotrader_events = Table(
+    "autotrader_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", BigInteger, nullable=False, index=True),
+    Column("mode", String(10)),
+    Column("level", String(10)),  # info | trade | warn | error | kill
+    Column("action", String(30)),  # placed, cancelled, skipped, filled, killed, resumed, live_check, ...
+    Column("ticker", String(160)),
+    Column("message", Text),
+)
+
+equity_snapshots = Table(
+    "equity_snapshots", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", BigInteger, nullable=False, index=True),
+    Column("mode", String(10)),
+    Column("equity", Float),
+    Column("realized", Float),
+    Column("unrealized", Float),
+    Column("spy_close", Float),
+)
+
+spy_prices = Table(
+    "spy_prices", metadata,
+    Column("date", String(10), primary_key=True),
+    Column("close", Float, nullable=False),
 )
 
 job_runs = Table(

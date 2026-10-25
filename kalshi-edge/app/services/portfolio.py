@@ -48,10 +48,18 @@ def _rates_for(series_ticker: Optional[str], event_ticker: Optional[str]):
     return fee_rates_for(series_ticker, scanner.series_row(series_ticker), get_settings()["fees"], ev)
 
 
-def exposure_by_key(gas_series: Optional[set] = None) -> Dict[str, float]:
+def is_auto(t: Dict[str, Any]) -> bool:
+    """The AI trader keeps its own book (its own $ bankroll, stops, and caps), separate from your manual one."""
+    return (t.get("source") or "manual") == "auto"
+
+
+def exposure_by_key(gas_series: Optional[set] = None, auto: bool = False, mode: Optional[str] = None) -> Dict[str, float]:
+    """Open cost per correlation bucket, for your manual book, or for the AI trader's book with auto=True."""
     gs = gas_series if gas_series is not None else scanner.gas_series_set()
     out: Dict[str, float] = defaultdict(float)
     for t in db.fetch_all(select(db.trades).where(db.trades.c.status.in_(OPEN_STATES))):
+        if is_auto(t) != auto or (mode and t["mode"] != mode):
+            continue
         out[corr_key(t["series_ticker"], t["event_ticker"], gs)] += _cost(t)
         if t.get("combo_legs"):
             # A parlay rides on every game in it: count its cost against each of those games too.
@@ -131,7 +139,8 @@ def create_trade(p: Dict[str, Any]) -> Dict[str, Any]:
         fee = kalshi_fee(contracts, price, rates.maker_rate if order_type == "maker" else rates.taker_rate,
                          rates.precision)
     ts = now_ts()
-    filled = mode == "real" or order_type == "taker" or bool(p.get("assume_filled"))
+    # A real order the AI trader just sent rests on Kalshi until its fills are synced.
+    filled = (mode == "real" and not p.get("resting_real")) or order_type == "taker" or bool(p.get("assume_filled"))
     row = {
         "mode": mode, "ticker": p["ticker"], "event_ticker": m.get("event_ticker") or p.get("event_ticker"),
         "series_ticker": m.get("series_ticker") or p.get("series_ticker"), "category": m.get("category"),
@@ -141,7 +150,9 @@ def create_trade(p: Dict[str, Any]) -> Dict[str, Any]:
         "expert_source": p.get("expert_source"), "news_link": p.get("news_link"),
         "fair_at_entry": p.get("fair_at_entry"), "edge_at_entry": p.get("edge_at_entry"),
         "created_ts": ts, "filled_ts": ts if filled else None,
-        "fill_note": "logged as filled" if filled else "resting maker order; fills when the market trades to it",
+        "fill_note": "logged as filled" if filled else ("resting on Kalshi" if mode == "real" else
+                                                          "resting maker order; fills when the market trades to it"),
+        "source": p.get("source") or "manual",
     }
     with db.get_engine().begin() as c:
         tid = c.execute(insert(db.trades).values(**row)).inserted_primary_key[0]
@@ -337,7 +348,9 @@ def _settle_combo(t: Dict[str, Any], now: int) -> int:
 def summary() -> Dict[str, Any]:
     settings = get_settings()
     gs = scanner.gas_series_set(settings)
-    trades = db.fetch_all(select(db.trades))
+    everything = db.fetch_all(select(db.trades))
+    # Positions list shows the AI trader's trades too (tagged), but your bankroll, P&L, and caps are your own.
+    trades = [t for t in everything if not is_auto(t)]
     realized_paper = sum(t["realized_pnl"] or 0 for t in trades if t["mode"] == "paper" and t["realized_pnl"] is not None)
     realized_real = sum(t["realized_pnl"] or 0 for t in trades if t["mode"] == "real" and t["realized_pnl"] is not None)
     today = hst_date()
@@ -348,18 +361,19 @@ def summary() -> Dict[str, Any]:
     by_cat: Dict[str, float] = defaultdict(float)
     by_key: Dict[str, float] = defaultdict(float)
     unrealized = 0.0
-    for t in trades:
+    for t in everything:
         if t["status"] not in OPEN_STATES:
             continue
         cost = _cost(t)
-        by_cat[t["category"] or "Other"] += cost
-        by_key[corr_key(t["series_ticker"], t["event_ticker"], gs)] += cost
         m = db.fetch_one(select(db.markets).where(db.markets.c.ticker == t["ticker"])) or {}
         bid, _ = _side_quotes(m, t["side"]) if m else (None, None)
         mark = bid
         upnl = round(t["contracts"] * mark - cost, 2) if (mark is not None and t["status"] == "open") else None
-        if upnl is not None:
-            unrealized += upnl
+        if not is_auto(t):
+            by_cat[t["category"] or "Other"] += cost
+            by_key[corr_key(t["series_ticker"], t["event_ticker"], gs)] += cost
+            if upnl is not None:
+                unrealized += upnl
         positions.append(dict(t, cost=cost, mark=mark, unrealized_pnl=upnl, max_loss=cost,
                               created_hst=hst(t["created_ts"]), close_hst=hst(m.get("close_ts"))))
     cap = settings["correlated_cap_pct"] / 100.0 * bankroll

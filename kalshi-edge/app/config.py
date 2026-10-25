@@ -29,6 +29,13 @@ ESPN_NFL_SCOREBOARD = _env(
 AAA_URL = _env("AAA_URL", "https://gasprices.aaa.com/")
 # Public, read-only Polymarket data (on-chain records). Used only to grade and follow bettors; never to trade.
 POLYMARKET_DATA_API = _env("POLYMARKET_DATA_API", "https://data-api.polymarket.com").rstrip("/")
+# Your Kalshi API key (create it in Kalshi -> Settings -> API keys). The private key file stays on this Mac.
+KALSHI_API_KEY_ID = _env("KALSHI_API_KEY_ID")
+KALSHI_PRIVATE_KEY_PATH = _env("KALSHI_PRIVATE_KEY_PATH")
+TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID")
+# Dashboard password (HTTP Basic). Required before the AI trader can go live.
+APP_PASSWORD = _env("APP_PASSWORD")
 APP_HOST = _env("APP_HOST", "0.0.0.0")
 APP_PORT = int(_env("APP_PORT", "8000") or 8000)
 SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -94,6 +101,7 @@ DEFAULT_SETTINGS = {
         "edge_record_minutes": 5,
         "follow_discover_hours": 24,
         "follow_picks_minutes": 15,
+        "autotrader_minutes": 2,
     },
     "active_series": ["KXNFLGAME", "KXNFLSPREAD", "KXNFLTOTAL"],
     "top_volume_active_count": 40,
@@ -139,6 +147,31 @@ DEFAULT_SETTINGS = {
         # The model may rate gas bets above Watch only after beating Kalshi's own prices (Brier score)
         # over at least this many settled days.
         "min_graded_days": 10,
+    },
+    # The AI trader: runs your rules automatically. Hard limits are enforced in code on every order.
+    "autotrader": {
+        "mode": "off",  # off | paper | live (live also needs the go-live test, a passed live check, and a password)
+        "bankroll": 500.0,
+        "tiers": ["S", "G"],
+        "trade_nfl_singles": True,
+        "trade_parlays": True,
+        "trade_gas": True,
+        "allow_sports": True,  # regulatory switch: turn off to stop all sports trading at once
+        "max_order_usd": 15.0,
+        "max_open_usd": 150.0,
+        "max_orders_per_day": 25,
+        "max_parlays_per_day": 2,
+        "max_parlay_usd": 5.0,
+        "daily_loss_limit_usd": 25.0,
+        "total_stop_usd": 50.0,
+        "order_ttl_minutes": 30,
+        "min_minutes_before_close": 15,
+        "max_price_age_minutes": 5,
+        "max_consecutive_errors": 3,
+        "parlays_live": False,  # live combo quotes stay off until verified; parlays are paper + phone alert
+        "gate": {"paper_days": 14, "min_settled": 10, "require_profit": True, "require_beat_spy": True,
+                 "require_clv": True},
+        "tax_set_aside_pct": 30.0,
     },
     # Following proven bettors: Polymarket wallets graded by this app from their public NFL record.
     "follow": {

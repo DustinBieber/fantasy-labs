@@ -9,8 +9,8 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from . import db
 from .engine.experts import proof_grade, rolling_grade
-from .services import (edges, follow_service, gas_service, jobs, lines_service, nfl_service, parlay_service,
-                       portfolio, scanner)
+from .services import (autotrader, edges, follow_service, gas_service, jobs, lines_service, nfl_service,
+                       parlay_service, portfolio, scanner, tax)
 from .services.categorize import CATEGORIES
 from .settings_store import get_settings, reset_settings, update_settings
 from .sources import odds_api
@@ -34,6 +34,7 @@ def status() -> Dict[str, Any]:
         "open_exposure": p["open_exposure"], "today_realized": p["today_realized"], "unrealized": p["unrealized"],
         "warnings": p["warnings"], "freshness": jobs.freshness(), "open_markets": total_markets["n"],
         "snapshots": snaps["n"], "odds_api_enabled": odds_api.enabled(),
+        "autotrader": {"mode": get_settings()["autotrader"]["mode"], "killed": bool(autotrader.state().get("killed"))},
     }
 
 
@@ -92,6 +93,53 @@ def nfl_manual_line(payload: Dict[str, Any] = Body(...)):
         _bad(e)
     edges.compute(force=True)
     return r
+
+
+@router.get("/auto/status")
+def auto_status():
+    return autotrader.status()
+
+
+@router.post("/auto/mode")
+def auto_mode(payload: Dict[str, Any] = Body(...)):
+    mode = payload.get("mode")
+    if mode not in ("off", "paper", "live"):
+        _bad(ValueError("mode must be off, paper, or live"))
+    if mode == "live":
+        blockers = autotrader.live_blockers()
+        if blockers:
+            raise HTTPException(status_code=400, detail="Live mode is blocked: " + "; ".join(blockers))
+    update_settings({"autotrader": {"mode": mode}})
+    autotrader.event("info", "mode", f"Mode set to {mode} by you.", mode=mode, alert=True)
+    return autotrader.status()
+
+
+@router.post("/auto/kill")
+def auto_kill(payload: Dict[str, Any] = Body(default={})):
+    return autotrader.kill(payload.get("reason") or "stopped by you")
+
+
+@router.post("/auto/resume")
+def auto_resume():
+    return autotrader.resume()
+
+
+@router.post("/auto/live-check")
+def auto_live_check():
+    if not autotrader.kalshi_auth.configured():
+        _bad(ValueError("Add KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH to .env and restart first"))
+    return autotrader.live_check()
+
+
+@router.get("/tax/summary")
+def tax_summary(year: Optional[int] = None):
+    return tax.summary(year)
+
+
+@router.get("/tax/ledger.csv", response_class=PlainTextResponse)
+def tax_csv(year: Optional[int] = None):
+    return PlainTextResponse(tax.to_csv(year), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename=kalshi_edge_tax_{year or 'all'}.csv"})
 
 
 @router.get("/parlays")
@@ -226,6 +274,10 @@ def settings_get():
 
 @router.put("/settings")
 def settings_put(payload: Dict[str, Any] = Body(...)):
+    if (payload.get("autotrader") or {}).get("mode") == "live":
+        blockers = autotrader.live_blockers()
+        if blockers:
+            raise HTTPException(status_code=400, detail="Live mode is blocked: " + "; ".join(blockers))
     try:
         s = update_settings(payload)
     except (ValueError, KeyError, TypeError) as e:

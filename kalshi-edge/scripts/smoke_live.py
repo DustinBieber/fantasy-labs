@@ -33,7 +33,7 @@ def main() -> int:
     print(f"Kalshi API: {config.KALSHI_API_BASE}")
     print(f"Database: {config.DATABASE_URL}\n")
     order = ["kalshi_series", "kalshi_active", "espn_nfl", "odds_api", "aaa", "gas_backfill", "follow_discover",
-             "follow_picks", "settle"]
+             "follow_picks", "settle", "benchmark"]
     if not args.skip_scan:
         order.insert(0, "kalshi_scan")
     results = {}
@@ -162,6 +162,7 @@ def main() -> int:
         ("The Odds API on", "skipped" not in results.get("odds_api", {}),
          "Optional: add ODDS_API_KEY to .env for sharp-book (Pinnacle) fair prices."),
     ]
+    checks += ai_trader_checks(results)
     for label, ok, hint in checks:
         print(f"  {'PASS' if ok else 'FAIL'}  {label}" + ("" if ok else f"\n        -> {hint}"))
 
@@ -170,6 +171,35 @@ def main() -> int:
         print(f"  {f['label']:<32} {f['state']:<6} last good {f['last_ok'] or 'never'}"
               + (f"  ERROR: {f['last_error']}" if f["state"] == "error" else ""))
     return 0
+
+
+def ai_trader_checks(results):
+    """Read-only checks for the AI trader. Places no orders: the order round trip is the Live check button."""
+    from app import config
+    from app.sources import kalshi_auth, notify
+    out = [("S&P 500 benchmark fetched (FRED, Yahoo fallback)", "error" not in results.get("benchmark", {"error": 1}),
+            f"Result: {results.get('benchmark')}. Without it the go-live test can't compare against the S&P.")]
+    out.append(("APP_PASSWORD set (required for live)", bool(config.APP_PASSWORD), "Add APP_PASSWORD to .env."))
+    if kalshi_auth.configured():
+        try:
+            bal = kalshi_auth.balance()
+            ok, hint = bal["balance"] is not None, f"Balance response fields: {list(bal['raw'])[:8]}"
+            if ok:
+                print(f"\nKalshi API key works (read-only balance check): cash ${bal['balance']:,.2f}")
+        except Exception as e:  # noqa: BLE001
+            ok, hint = False, f"{e}. Check the key id, the .pem path, and that the key is not revoked."
+        out.append(("Kalshi API key signs requests (balance read)", ok, hint))
+        out.append(("Private key file is private (chmod 600)", not kalshi_auth.key_file_exposed(),
+                    f"Run: chmod 600 {config.KALSHI_PRIVATE_KEY_PATH}"))
+    else:
+        out.append(("Kalshi API key set (needed only for live)", False,
+                    "Optional during paper trading. Add KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH to .env."))
+    if notify.configured():
+        out.append(("Telegram alert delivered (check your phone)", notify.send("Kalshi Edge smoke test: alerts work."),
+                    "Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, and that you sent your bot a message first."))
+    else:
+        out.append(("Telegram alerts set (optional)", False, "Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to .env."))
+    return out
 
 
 def fmt(x):

@@ -3,11 +3,11 @@
 
 const COLORS = { kalshi: '#3987e5', fair: '#d95926', neutral: '#8b919a', grid: '#24272c', text: '#b4b9c0' };
 const TABS = [
-  ['edges', 'Top Edges'], ['sports', 'Sports'], ['parlays', 'Parlays'], ['follow', 'Follow'],
+  ['edges', 'Top Edges'], ['auto', 'AI Trader'], ['sports', 'Sports'], ['parlays', 'Parlays'], ['follow', 'Follow'],
   ['econ', 'Commodities & Econ'], ['news', 'News'],
   ['flow', 'Flow'], ['markets', 'Markets & History'], ['trades', 'Trades'], ['settings', 'Settings'], ['audit', 'Audit'],
 ];
-const S = { tab: 'edges', status: null, edges: null, nfl: null, gas: null, settings: null, experts: null,
+const S = { tab: 'edges', auto: null, tax: null, status: null, edges: null, nfl: null, gas: null, settings: null, experts: null,
   showPass: false, open: new Set(), charts: {}, mkt: { cat: '', q: '', sort: 'volume_24h', sel: null },
   audit: { source: '', failed: false } };
 
@@ -139,6 +139,12 @@ function renderTop() {
        class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${STATE_STYLE[f.state]}">
       <span class="w-1.5 h-1.5 rounded-full ${DOT[f.state]}"></span>${esc(SHORT[f.name] || f.label)}: ${freshText(f)}</a>`).join('');
   $('#clock').textContent = s.now_hst;
+  const at = s.autotrader || { mode: 'off' };
+  const badge = $('#modebadge');
+  if (badge) {
+    badge.textContent = at.killed ? 'AI trader stopped' : at.mode === 'off' ? 'AI trader off' : `AI trader ${at.mode}`;
+    badge.className = `ml-1 text-[10px] font-semibold uppercase tracking-wider rounded px-1 py-0.5 align-middle border ${at.killed ? 'border-red-600 text-red-200' : MODE_STYLE[at.mode]}`;
+  }
 }
 function renderNav() {
   $('#nav').innerHTML = TABS.map(([k, label]) => `<a href="#${k}" class="px-3 py-2 whitespace-nowrap border-b-2 ${S.tab === k ? 'border-red-500 text-white font-semibold' : 'border-transparent text-ink-400 hover:text-ink-100'}">${label}${['news', 'flow'].includes(k) ? '<span class="ml-1 text-[10px] text-ink-500">P2</span>' : ''}</a>`).join('');
@@ -203,7 +209,7 @@ function tradeForm(o) {
   const sz = o.size || {};
   const id = `tf-${o.ticker}-${o.side}`;
   return `<form class="trade-form grid grid-cols-2 sm:grid-cols-4 gap-2 bg-ink-950/60 border border-ink-800 rounded-lg p-3" data-ticker="${esc(o.ticker)}" data-maker-rate="${o.fee_rates?.maker ?? 0.0175}" data-taker-rate="${o.fee_rates?.taker ?? 0.07}" data-precision="${o.fee_rates?.precision ?? 0.0001}" id="${esc(id)}">
-    <div class="col-span-2 sm:col-span-4 text-[11px] uppercase tracking-wider text-ink-400">Log a trade (paper by default; this app never places orders)</div>
+    <div class="col-span-2 sm:col-span-4 text-[11px] uppercase tracking-wider text-ink-400">Log a trade (paper by default; this form only logs, it never sends an order to Kalshi)</div>
     <label class="text-xs text-ink-400">Mode<select name="mode" class="${inputCls}"><option value="paper">Paper</option><option value="real">Real (already placed by me)</option></select></label>
     <label class="text-xs text-ink-400">Order<select name="order_type" class="${inputCls}"><option value="maker">Maker (rest bid)</option><option value="taker">Taker (hit ask)</option></select></label>
     <label class="text-xs text-ink-400">Side<select name="side" class="${inputCls}"><option value="yes" ${o.side === 'yes' ? 'selected' : ''}>YES</option><option value="no" ${o.side === 'no' ? 'selected' : ''}>NO</option></select></label>
@@ -560,7 +566,7 @@ function viewParlays() {
     ${card(`${h2('NFL parlays (Kalshi Combos)', `${d.legs_considered} legs priced (${Object.entries(d.legs_by_type || {}).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}) · ${(d.pool || []).length} are +EV on their own`)}
       <div class="text-sm text-ink-300 space-y-1">
         <p>Legs can be moneylines, spreads, totals, or player props, one per game. Every ticket uses only legs where our fair price beats the Kalshi ask. A parlay of fair-priced legs isn't +EV, just higher variance. ${esc(d.note)}</p>
-        <p>Kalshi prices each combo by market-maker quote after you build it in the app. Each ticket gives the legs, our fair price, our estimate of the quote, and the <b>highest quote worth accepting</b> (net EV ≥ ${d.min_net_ev_pct}% after fees). This app never places bets.</p>
+        <p>Kalshi prices each combo by market-maker quote after you build it in the app. Each ticket gives the legs, our fair price, our estimate of the quote, and the <b>highest quote worth accepting</b> (net EV ≥ ${d.min_net_ev_pct}% after fees). You place combos yourself in the Kalshi app; the AI trader only paper-trades them or texts you the ticket.</p>
       </div>`)}
     <div>${tickets || card(`<div class="text-sm text-ink-400">${(d.pool || []).length < 2 ? 'Fewer than two +EV legs (from different games) right now, so no parlay is worth building. Legs need a fair price (Odds API key, a manual line, or ESPN for moneylines) and a Kalshi ask below it. Load alt lines + props on the Sports tab.' : 'No ticket clears the rules right now.'}</div>`)}</div>
     ${card(`${h2('Leg pool', 'best +EV leg per game, ranked by fair ÷ ask')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[620px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Leg</th><th class="pr-3">Game</th><th class="pr-3">Fair</th><th class="pr-3">Kalshi ask</th><th class="pr-3">Leg edge</th><th>Followed bettors</th></tr></thead><tbody>${pool || '<tr><td colspan="6" class="py-3 text-ink-500">No +EV legs right now.</td></tr>'}</tbody></table></div>`)}
@@ -771,11 +777,12 @@ async function loadTrades() {
   const [p, t] = await Promise.all([api('/portfolio'), api('/trades')]);
   S.port = p; S.trades = t;
 }
+const aiTag = (t) => (t.source === 'auto' ? ' <span class="text-[10px] uppercase px-1 py-0.5 rounded border border-amber-500 text-amber-200" title="Placed by the AI trader; its money and limits are on the AI Trader tab">AI</span>' : '');
 function viewTrades() {
   const p = S.port;
   if (!p) return loading();
   const pos = p.positions.map((t) => `<tr class="border-t border-ink-800 align-top">
-      <td class="py-1.5 pr-3"><span class="text-[10px] uppercase px-1.5 py-0.5 rounded border ${t.mode === 'real' ? 'border-red-600 text-red-300' : 'border-ink-600 text-ink-300'}">${t.mode}</span> <span class="text-xs ${t.status === 'resting' ? 'text-amber-300' : 'text-emerald-300'}">${t.status}</span></td>
+      <td class="py-1.5 pr-3"><span class="text-[10px] uppercase px-1.5 py-0.5 rounded border ${t.mode === 'real' ? 'border-red-600 text-red-300' : 'border-ink-600 text-ink-300'}">${t.mode}</span>${aiTag(t)} <span class="text-xs ${t.status === 'resting' ? 'text-amber-300' : 'text-emerald-300'}">${t.status}</span></td>
       <td class="pr-3"><div class="truncate max-w-[16rem]">${esc(t.title || t.ticker)}</div><div class="text-xs text-ink-400 font-mono truncate max-w-[16rem]">${esc(t.ticker)}</div><div class="text-[11px] text-ink-500">${esc(t.fill_note || '')}</div></td>
       <td class="pr-3">${t.side.toUpperCase()} ${t.tier ? tierBadge(t.tier) : ''}</td>
       <td class="pr-3 tabular-nums">${t.contracts} @ ${cents(t.limit_price)}</td><td class="pr-3 tabular-nums">${money(t.fees)}</td>
@@ -783,15 +790,16 @@ function viewTrades() {
       <td class="pr-3 tabular-nums ${pnlClass(t.unrealized_pnl)}">${money(t.unrealized_pnl)}</td>
       <td class="whitespace-nowrap">${t.status === 'resting' ? `<button class="${btn} text-xs" data-cancel="${t.id}">Cancel</button>` : `<button class="${btn} text-xs" data-close="${t.id}" data-mark="${t.mark ?? ''}">Close…</button>`}</td></tr>`).join('');
   const done = (S.trades || []).filter((t) => ['settled', 'closed', 'cancelled'].includes(t.status)).map((t) => `<tr class="border-t border-ink-800">
-      <td class="py-1.5 pr-3 text-xs">${esc(t.closed_hst || '')}</td><td class="pr-3 text-xs">${t.mode} · ${t.status}${t.settlement_result ? ' (' + t.settlement_result.toUpperCase() + ')' : ''}</td>
+      <td class="py-1.5 pr-3 text-xs">${esc(t.closed_hst || '')}</td><td class="pr-3 text-xs">${t.mode} · ${t.status}${aiTag(t)}${t.settlement_result ? ' (' + t.settlement_result.toUpperCase() + ')' : ''}</td>
       <td class="pr-3"><div class="truncate max-w-[16rem]">${esc(t.title || t.ticker)}</div></td><td class="pr-3">${t.side.toUpperCase()} ${t.tier || ''}</td>
       <td class="pr-3 tabular-nums">${t.contracts} @ ${cents(t.limit_price)}</td><td class="pr-3 tabular-nums">${t.clv_pts != null ? signed(t.clv_pts, 1, ' pts') : '—'}</td>
       <td class="tabular-nums ${pnlClass(t.realized_pnl)}">${money(t.realized_pnl)}</td></tr>`).join('');
   const tiers = Object.entries(p.by_tier || {}).map(([k, v]) => `${tierBadge(k)} <span class="text-sm tabular-nums mr-4">${v.n} trades · ${v.wins} wins · ${money(v.pnl)}</span>`).join('');
   return `<div class="grid grid-cols-1 gap-4">
-    ${card(`<div class="flex flex-wrap gap-x-8 gap-y-3">${stat('Bankroll (start + paper realized)', money(p.bankroll))}${stat('Paper realized', money(p.realized_paper), pnlClass(p.realized_paper))}${stat('Real realized (logged)', money(p.realized_real), pnlClass(p.realized_real))}${stat('Unrealized (at bid)', money(p.unrealized), pnlClass(p.unrealized))}${stat('Open exposure (max loss)', money(p.open_exposure))}${stat('Correlated cap', money(p.correlated_cap))}</div>
+    ${card(`<div class="flex flex-wrap gap-x-8 gap-y-3">${stat('Your bankroll (start + paper realized)', money(p.bankroll))}${stat('Paper realized', money(p.realized_paper), pnlClass(p.realized_paper))}${stat('Real realized (logged)', money(p.realized_real), pnlClass(p.realized_real))}${stat('Unrealized (at bid)', money(p.unrealized), pnlClass(p.unrealized))}${stat('Open exposure (max loss)', money(p.open_exposure))}${stat('Correlated cap', money(p.correlated_cap))}</div>
       ${p.warnings.map((w) => `<div class="mt-3 rounded-md border border-red-700 bg-red-950/50 px-3 py-2 text-sm text-red-100">${esc(w)}</div>`).join('')}
-      <div class="mt-3 text-xs text-ink-400">Exposure by board: ${Object.entries(p.exposure_by_category).map(([k, v]) => `${esc(k)} ${money(v)}`).join(' · ') || 'none'}</div>
+      <div class="mt-3 text-xs text-ink-400">These numbers are your own trades. The AI trader keeps a separate book (tagged <span class="text-amber-200">AI</span> below); its money, stops, and caps are on the <a class="underline" href="#auto">AI Trader</a> tab.</div>
+      <div class="mt-1 text-xs text-ink-400">Exposure by board: ${Object.entries(p.exposure_by_category).map(([k, v]) => `${esc(k)} ${money(v)}`).join(' · ') || 'none'}</div>
       <div class="mt-3 flex flex-wrap gap-2"><a class="${btn}" href="/api/trades.csv">Export CSV</a></div>`)}
     ${card(`${h2('Open positions and resting orders')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[820px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Status</th><th class="pr-3">Market</th><th class="pr-3">Side</th><th class="pr-3">Qty @ price</th><th class="pr-3">Fees</th><th class="pr-3">Max loss</th><th class="pr-3">Mark</th><th class="pr-3">Unrealized</th><th></th></tr></thead><tbody>${pos || '<tr><td colspan="9" class="py-4 text-ink-500">No open positions. Log a paper trade from any edge row.</td></tr>'}</tbody></table></div>`)}
     ${card(`${h2('By tier')}${tiers || '<span class="text-sm text-ink-500">No closed trades yet.</span>'}`)}
@@ -814,6 +822,116 @@ function bindTrades(root) {
     form.addEventListener('input', () => updateMaxLoss(form));
     form.addEventListener('submit', (e) => { e.preventDefault(); form.dataset.ticker = $('#ft-ticker').value.trim(); submitTrade(form).then(() => loadTab(true)); });
   }
+}
+
+/* ---------- AI Trader ---------- */
+const AUTO_LIMITS = [['bankroll', 'Trader bankroll ($)'], ['max_order_usd', 'Max per order ($)'], ['max_open_usd', 'Max open at once ($)'],
+  ['max_orders_per_day', 'Max new orders a day'], ['daily_loss_limit_usd', 'Daily loss stop ($)'], ['total_stop_usd', 'Total loss stop ($)'],
+  ['max_parlays_per_day', 'Max parlays a day'], ['max_parlay_usd', 'Max per parlay ($)'], ['order_ttl_minutes', 'Cancel unfilled orders after (min)'],
+  ['tax_set_aside_pct', 'Tax set-aside (% of gains)']];
+const AUTO_SWITCHES = [['trade_nfl_singles', 'NFL single bets (moneyline, spread, total, props)'], ['trade_parlays', 'NFL parlays (combos)'],
+  ['trade_gas', 'AAA gas ladder'], ['allow_sports', 'Sports markets at all (turn off if sports contracts are restricted for Hawaii)']];
+const MODE_STYLE = { off: 'border-ink-600 text-ink-300', paper: 'border-amber-500 text-amber-200 bg-amber-950/40', live: 'border-red-500 text-red-100 bg-red-950/60' };
+const check = (ok) => (ok ? '<span class="text-emerald-400 font-bold">✓</span>' : '<span class="text-red-400 font-bold">✗</span>');
+async function loadAuto() {
+  const [a, t, s] = await Promise.all([api('/auto/status'), api('/tax/summary'), api('/settings')]);
+  S.auto = a; S.tax = t; S.settings = s;
+}
+function viewAuto() {
+  const a = S.auto;
+  if (!a || !S.settings) return loading();
+  const cfg = S.settings.autotrader;
+  const eq = a.equity;
+  const total = eq.equity - eq.bankroll;
+  const day = eq.equity - a.day_start;
+  const modeBtns = ['off', 'paper', 'live'].map((m) => `<button data-mode="${m}" class="px-4 py-2 rounded-md text-sm font-semibold border ${a.mode === m ? MODE_STYLE[m] : 'border-ink-700 text-ink-400 hover:border-ink-500'}">${m.toUpperCase()}</button>`).join('');
+  const killed = a.killed ? `<div class="mt-3 rounded-md border border-red-600 bg-red-950/60 px-3 py-2 text-sm text-red-100"><b>STOPPED</b> ${esc(a.kill_hst)}: ${esc(a.kill_reason || '')}. Nothing new is placed until you press Resume.</div>` : '';
+  const top = card(`<div class="flex flex-wrap items-center gap-3">
+      <div class="flex gap-1.5">${modeBtns}</div><div class="grow"></div>
+      ${a.killed ? `<button id="auto-resume" class="${btn}">Resume</button>` : ''}
+      <button id="auto-kill" class="px-5 py-2.5 rounded-md text-sm font-bold bg-red-600 hover:bg-red-500 text-white tracking-wide">STOP ALL</button></div>
+    ${killed}
+    <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-x-6 gap-y-3">
+      ${stat('Equity', money(eq.equity))}${stat('Total P&L', money(total), pnlClass(total))}${stat('Today', money(day), pnlClass(day))}
+      ${stat('Realized', money(eq.realized), pnlClass(eq.realized))}${stat('Unrealized (at bid)', money(eq.unrealized), pnlClass(eq.unrealized))}
+      ${stat('In positions', money(eq.open_cost))}${stat('Resting orders', money(eq.resting_cost))}</div>
+    <div class="mt-3 text-xs text-ink-400">Last cycle ${esc(a.last_cycle_hst)} · ${a.mode === 'off' ? 'Off: the trader is not scanning.' : a.mode === 'paper' ? 'Paper: real prices, pretend money. Nothing reaches Kalshi.' : '<span class="text-red-300 font-semibold">Live: real orders on your Kalshi account.</span>'}
+      Stops: ${money(cfg.daily_loss_limit_usd)} a day, ${money(cfg.total_stop_usd)} total (${money(cfg.bankroll - cfg.total_stop_usd)} floor).</div>`);
+  const pts = a.equity_series || [];
+  const spy0 = (pts.find((p) => p.spy) || {}).spy;
+  const chart = card(`${h2('Equity vs the S&P 500', 'S&P line = the same starting money in the S&P 500 over the same days')}
+    ${pts.length > 1 ? '<div class="h-56"><canvas id="auto-chart"></canvas></div>' : '<div class="text-sm text-ink-500 py-6">The chart fills in as the trader runs (one point every 30 minutes).</div>'}
+    ${a.gate.started ? `<div class="mt-2 text-sm">Since paper start: AI trader <b class="${pnlClass(a.gate.return_pct)}">${signed(a.gate.return_pct, 2, '%')}</b> vs S&amp;P <b>${a.gate.spy_pct == null ? '—' : signed(a.gate.spy_pct, 2, '%')}</b></div>` : ''}`);
+  const lc = a.live_check;
+  const ready = [['Kalshi API key', a.keys, 'KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH in .env'], ['App password', a.password, 'APP_PASSWORD in .env'],
+    ['Telegram alerts (optional)', a.telegram, 'TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env']];
+  const golive = card(`${h2('Go-live test', 'all of these must pass before Live unlocks')}
+    <ul class="space-y-1.5 text-sm">${a.gate.checks.map((c) => `<li class="flex gap-2">${check(c.ok)}<span>${esc(c.label)} <span class="text-ink-400 text-xs">· ${esc(c.detail)}</span></span></li>`).join('')}</ul>
+    <div class="mt-4 grid sm:grid-cols-3 gap-2 text-sm">${ready.map(([l, ok, how]) => `<div class="rounded-md border border-ink-800 px-3 py-2">${check(ok)} ${l}${ok ? '' : `<div class="text-xs text-ink-400">${how}</div>`}</div>`).join('')}</div>
+    <div class="mt-4 flex flex-wrap items-center gap-3"><button id="auto-check" class="${btn}" ${a.keys ? '' : 'disabled'}>Run live check</button>
+      <span class="text-xs text-ink-400">Places a 1¢ YES and a 1¢ NO order that cannot fill, confirms Kalshi recorded them exactly, then cancels both.</span></div>
+    ${lc ? `<div class="mt-3 rounded-md border ${lc.ok ? 'border-emerald-700' : 'border-red-700'} px-3 py-2 text-xs"><div class="font-semibold mb-1">${lc.ok ? 'Passed' : 'Failed'} ${esc(hst(lc.ts))}</div>${lc.steps.map((x) => `<div>${esc(x)}</div>`).join('')}</div>` : ''}
+    ${a.live_blockers.length ? `<div class="mt-3 text-xs text-amber-200">Live is locked: ${a.live_blockers.map(esc).join(' · ')}</div>` : '<div class="mt-3 text-xs text-emerald-300">Live is unlocked.</div>'}`);
+  const limits = card(`${h2('Hard limits and markets', 'the trader can never go past these')}
+    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">${AUTO_LIMITS.map(([k, l]) => `<label class="text-xs text-ink-400">${l}<input data-auto="${k}" type="number" step="any" min="0" class="${inputCls}" value="${esc(cfg[k])}"></label>`).join('')}</div>
+    <div class="mt-3 grid sm:grid-cols-2 gap-2">${AUTO_SWITCHES.map(([k, l]) => `<label class="text-sm text-ink-200 flex items-center gap-2"><input type="checkbox" data-autosw="${k}" ${cfg[k] ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    <div class="mt-2 text-xs text-ink-400">Tiers traded: ${(cfg.tiers || []).join(', ')} (G at half size). Maker orders only (post-only). Live parlays stay off until Kalshi's combo order flow is verified on your account; in Live the trader texts you parlay tickets instead.</div>
+    <div class="mt-3"><button id="auto-save" class="${btnPrimary}">Save limits</button></div>`);
+  const pos = a.positions.map((t) => `<tr class="border-t border-ink-800 align-top">
+      <td class="py-1.5 pr-3 text-xs ${t.status === 'resting' ? 'text-amber-300' : 'text-emerald-300'}">${t.status}</td>
+      <td class="pr-3"><div class="truncate max-w-[18rem]">${esc(t.title || t.ticker)}</div><div class="text-[11px] text-ink-500 font-mono truncate max-w-[18rem]">${esc(t.ticker)}</div></td>
+      <td class="pr-3">${t.side.toUpperCase()} ${t.tier ? tierBadge(t.tier) : ''}</td><td class="pr-3 tabular-nums">${t.contracts} @ ${cents(t.limit_price)}</td>
+      <td class="pr-3 tabular-nums">${money(t.contracts * t.limit_price + (t.fees || 0))}</td><td class="text-xs text-ink-400">${esc(t.created_hst)}</td></tr>`).join('');
+  const posCard = card(`${h2('What it holds now', 'its own orders only; your manual trades are separate')}<div class="overflow-x-auto"><table class="text-sm w-full min-w-[680px]"><thead class="text-[11px] uppercase tracking-wider text-ink-500 text-left"><tr><th class="py-1 pr-3">Status</th><th class="pr-3">Market</th><th class="pr-3">Side</th><th class="pr-3">Qty @ price</th><th class="pr-3">Cost</th><th>Placed</th></tr></thead><tbody>${pos || '<tr><td colspan="6" class="py-4 text-ink-500">Nothing open. It only trades when an edge clears the tier rules.</td></tr>'}</tbody></table></div>`);
+  const lvl = { error: 'text-red-300', warn: 'text-amber-200', info: 'text-ink-200' };
+  const log = card(`${h2('Activity log', 'every decision it made, newest first')}<div class="max-h-96 overflow-y-auto text-xs space-y-1">${a.events.map((e) => `<div class="flex gap-2 ${lvl[e.level] || ''}"><span class="text-ink-500 whitespace-nowrap tabular-nums">${esc(e.hst)}</span><span class="uppercase text-[10px] text-ink-400 w-24 shrink-0 pt-px">${esc(e.action.replace(/_/g, ' '))}</span><span class="min-w-0 break-words">${esc(e.message)}</span></div>`).join('') || '<div class="text-ink-500">No activity yet.</div>'}</div>`);
+  const tx = S.tax;
+  const taxCard = tx ? card(`${h2(`Taxes ${tx.year}`, 'real-money trades only; paper trades are not taxable')}
+    <div class="flex flex-wrap gap-x-8 gap-y-3">${stat('Closed trades', tx.trades)}${stat('Proceeds', money(tx.proceeds))}${stat('Cost basis (with fees)', money(tx.cost_basis))}${stat('Net gain', money(tx.net_gain), pnlClass(tx.net_gain))}${stat(`Set aside (${tx.set_aside_pct}%)`, money(tx.set_aside))}</div>
+    <div class="mt-3 text-xs text-ink-400">${esc(tx.note)}</div>
+    <div class="mt-3"><a class="${btn}" href="/api/tax/ledger.csv?year=${tx.year}">Download ${tx.year} tax ledger (CSV)</a></div>`) : '';
+  return `<div class="grid grid-cols-1 gap-4">${top}<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">${chart}${golive}</div>${limits}${posCard}${log}${taxCard}</div>`;
+}
+function bindAuto(root) {
+  const a = S.auto;
+  if (!a) return;
+  const pts = a.equity_series || [];
+  const spy0 = (pts.find((p) => p.spy) || {}).spy;
+  if (pts.length > 1) {
+    const ds = [{ label: 'AI trader', data: pts.map((p) => p.equity), borderColor: COLORS.fair }];
+    if (spy0) ds.push({ label: 'S&P 500', data: pts.map((p) => (p.spy ? +(a.equity.bankroll * p.spy / spy0).toFixed(2) : null)), borderColor: COLORS.kalshi });
+    lineChart('auto-chart', pts.map((p) => fmtDay.format(new Date(p.ts * 1000))), ds, { yFmt: (v) => '$' + v, tip: (c) => ` ${c.dataset.label}: ${money(c.parsed.y)}` });
+  }
+  $$('[data-mode]', root).forEach((b) => b.addEventListener('click', async () => {
+    const m = b.dataset.mode;
+    if (m === a.mode) return;
+    if (m === 'live') {
+      const cfg = S.settings.autotrader;
+      const typed = prompt(`REAL MONEY. The AI trader will place real orders on your Kalshi account by itself: up to ${money(cfg.max_order_usd)} per order, ${money(cfg.max_open_usd)} open at once, and it stops itself at ${money(cfg.daily_loss_limit_usd)} down in a day or ${money(cfg.total_stop_usd)} down in total.\n\nType LIVE to confirm.`);
+      if ((typed || '').trim().toUpperCase() !== 'LIVE') { toast('Not switched to Live.'); return; }
+    }
+    try { await post('/auto/mode', { mode: m }); toast(`AI trader: ${m.toUpperCase()}`); await loadTab(true); refreshStatus(); } catch (e) { toast(e.message, true); }
+  }));
+  $('#auto-kill', root)?.addEventListener('click', async () => {
+    if (!confirm('Stop the AI trader now and cancel every order it has resting? Positions already filled stay open.')) return;
+    try { const r = await post('/auto/kill', { reason: 'STOP ALL pressed' }); toast(`Stopped. ${r.cancelled} orders cancelled.`); await loadTab(true); refreshStatus(); } catch (e) { toast(e.message, true); }
+  });
+  $('#auto-resume', root)?.addEventListener('click', async () => {
+    if (!confirm('Resume the AI trader? The loss stops still apply.')) return;
+    try { await post('/auto/resume'); toast('Resumed.'); await loadTab(true); refreshStatus(); } catch (e) { toast(e.message, true); }
+  });
+  $('#auto-check', root)?.addEventListener('click', async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Checking…';
+    try { const r = await post('/auto/live-check'); toast(r.ok ? 'Live check passed.' : 'Live check failed: see the steps.', !r.ok); } catch (err) { toast(err.message, true); }
+    await loadTab(true);
+  });
+  $('#auto-save', root)?.addEventListener('click', async () => {
+    const patch = {};
+    $$('[data-auto]', root).forEach((i) => { if (i.value.trim() !== '') patch[i.dataset.auto] = Number(i.value); });
+    $$('[data-autosw]', root).forEach((i) => { patch[i.dataset.autosw] = i.checked; });
+    if (patch.total_stop_usd > patch.bankroll || patch.max_order_usd > patch.bankroll) { toast('Stops and order size must be below the bankroll.', true); return; }
+    try { S.settings = await put('/settings', { autotrader: patch }); toast('Limits saved.'); await loadTab(true); } catch (e) { toast(e.message, true); }
+  });
 }
 
 /* ---------- Settings ---------- */
@@ -929,7 +1047,7 @@ const VIEWS = {
   edges: [viewEdges, bindEdgeRows], sports: [viewSports, bindSports],
   parlays: [viewParlays, bindParlays], follow: [viewFollow, bindFollow],
   econ: [viewEcon, (r) => { bindEdgeRows(r); bindEcon(r); }], news: [viewNews, () => {}], flow: [viewFlow, () => {}],
-  markets: [viewMarkets, bindMarkets], trades: [viewTrades, bindTrades], settings: [viewSettings, bindSettings], audit: [viewAudit, bindAudit],
+  auto: [viewAuto, bindAuto], markets: [viewMarkets, bindMarkets], trades: [viewTrades, bindTrades], settings: [viewSettings, bindSettings], audit: [viewAudit, bindAudit],
 };
 function render() {
   renderNav();
@@ -959,6 +1077,7 @@ async function loadTab(force = false) {
     if (t === 'follow') S.follow = await api('/follow');
     if (t === 'markets') await loadMarkets();
     if (t === 'trades') await loadTrades();
+    if (t === 'auto') await loadAuto();
     if (t === 'settings') { S.settings = await api('/settings'); S.experts = await api('/experts'); }
     if (t === 'audit') await loadAudit();
   } catch (e) {

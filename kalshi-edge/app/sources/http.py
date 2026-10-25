@@ -22,7 +22,8 @@ _rate_lock = threading.Lock()
 _last_call: Dict[str, float] = {}
 
 # Minimum seconds between calls per source (Kalshi basic tier allows ~20 reads/sec).
-MIN_INTERVAL = {"kalshi": 0.12, "espn": 0.5, "odds_api": 1.0, "aaa": 2.0, "polymarket": 0.25}
+MIN_INTERVAL = {"kalshi": 0.12, "kalshi_auth": 0.25, "espn": 0.5, "odds_api": 1.0, "aaa": 2.0, "polymarket": 0.25,
+                "benchmark": 1.0, "telegram": 0.5}
 
 
 class FetchError(Exception):
@@ -30,6 +31,12 @@ class FetchError(Exception):
         super().__init__(msg)
         self.pull_id = pull_id
         self.status = status
+
+
+def mask_url(url: str) -> str:
+    """Never log secrets: Odds API keys and Telegram bot tokens travel inside URLs."""
+    url = re.sub(r"apiKey=[^&]+", "apiKey=***", url)
+    return re.sub(r"/bot[^/]+/", "/bot***/", url)
 
 
 def _client(transport: Optional[httpx.BaseTransport] = None) -> httpx.Client:
@@ -90,7 +97,7 @@ def finish_pull(pull_id: int, ok: bool, http_status: Optional[int] = None, rows:
 def get(source: str, url: str, params: Optional[Dict[str, Any]] = None, expect: str = "json",
         retries: int = 3, headers: Optional[Dict[str, str]] = None) -> Tuple[Any, int, httpx.Response]:
     """GET with retries. Returns (parsed body, pull_id, response). Raises FetchError (already logged)."""
-    endpoint = re.sub(r"apiKey=[^&]+", "apiKey=***", url)
+    endpoint = mask_url(url)
     pull_id = log_pull(source, endpoint, params)
     started = time.time()
     last_err: Optional[str] = None
@@ -121,4 +128,42 @@ def get(source: str, url: str, params: Optional[Dict[str, Any]] = None, expect: 
             break
     finish_pull(pull_id, False, status, error=last_err, started=started)
     log.warning("pull failed %s %s: %s", source, endpoint, last_err)
+    raise FetchError(last_err or "request failed", pull_id, status)
+
+
+def request(source: str, method: str, url: str, params: Optional[Dict[str, Any]] = None,
+            json_body: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None,
+            idempotent: bool = False) -> Tuple[Any, int, httpx.Response]:
+    """Any HTTP method, logged like get(). Non-idempotent calls (placing an order) are never retried after a
+    timeout or connection error, because the first attempt may have gone through; only a 429 is retried."""
+    endpoint = mask_url(url)
+    pull_id = log_pull(source, f"{method} {endpoint}", params)
+    started = time.time()
+    client = _client(_transport_override)
+    status: Optional[int] = None
+    last_err: Optional[str] = None
+    for attempt in range(3):
+        _throttle(source)
+        try:
+            resp = client.request(method, url, params=params, json=json_body, headers=headers)
+            status = resp.status_code
+            if status == 429 or (idempotent and status >= 500):
+                last_err = f"HTTP {status}"
+                time.sleep(min(1.5 * (2 ** attempt), 10))
+                continue
+            if status >= 400:
+                last_err = f"HTTP {status}: {resp.text[:300]}"
+                break
+            body = resp.json() if resp.content else {}
+            finish_pull(pull_id, True, status, started=started)
+            return body, pull_id, resp
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            last_err = f"{type(e).__name__}: {e}"
+            if not idempotent:
+                break
+            time.sleep(min(1.5 * (2 ** attempt), 10))
+        except ValueError as e:
+            last_err = f"Bad response body: {e}"
+            break
+    finish_pull(pull_id, False, status, error=last_err, started=started)
     raise FetchError(last_err or "request failed", pull_id, status)
