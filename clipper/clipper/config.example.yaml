@@ -1,0 +1,119 @@
+# Fantasy Labs Clipper config.
+# Lives at ~/sandbox-data/clipper/config.yaml (copied here by `sandbox.sh setup`).
+# Secrets (API keys, passwords) go in the .env file next to it, never in this file.
+
+worker:
+  timezone: Pacific/Honolulu        # your local time; change if you're not on HST
+  active_hours: "08:00-17:00"       # heavy work (download/transcribe/render/discover) runs only in this window
+  active_days: [mon, tue, wed, thu, fri]
+  publish_anytime: true             # approved posts still go out on schedule outside the window
+  tick_seconds: 300
+  sync_every_minutes: 60            # how often to check creators for new uploads
+  discover_every_hours: 24
+  max_videos_per_tick: 2
+
+ai:
+  # free     -> keyword/energy heuristics, $0, no API key needed
+  # budget   -> Claude Haiku 5.5 (default; well under a cent per hour of video)
+  # standard -> Claude Sonnet 5.5
+  # premium  -> Claude Opus 5.5 (best picks)
+  tier: budget
+  model: null                       # override the tier's model id
+  effort: null                      # override the tier's effort (low|medium|high)
+  monthly_budget_usd: 5.00          # past this, the picker drops to the free heuristics until next month
+
+transcribe:
+  engine: auto                      # auto = free YouTube captions first, then local Whisper if installed
+  whisper_model: small              # tiny | base | small | medium (bigger = slower, more accurate)
+  language: en
+
+clips:
+  per_video: 4
+  min_seconds: 20
+  max_seconds: 75
+  montage: true                     # also cut a "best moments" teaser reel per episode
+  montage_max_seconds: 45
+  skip_intro_seconds: 45            # ignore cold opens / intros
+  skip_outro_seconds: 60            # ignore outros / sponsor reads at the end
+
+render:
+  layout: blur                      # blur = full frame on blurred background (safe for multi-cam pods); crop = center crop
+  crop_x: 0.5                       # 0 = left edge, 1 = right edge (crop layout only)
+  font: "Montserrat ExtraBold"
+  font_size: 84
+  uppercase: true
+  words_per_caption: 3
+  caption_color: "#FFFFFF"
+  highlight_color: "#FFB627"        # the word being spoken
+  hook_seconds: 0                   # headline at the top; 0 = show for the whole clip
+  cta: "FULL EPISODE ON YOUTUBE"
+  cta_mode: end                     # end | always | off
+  cta_seconds: 4
+  encoder: auto                     # auto uses Apple's hardware encoder natively on the Mac mini
+  crf: 21
+  keep_source_days: 3               # delete downloaded episodes after this many days (rendered clips are kept)
+
+discovery:
+  queries:
+    - fantasy football podcast
+    - fantasy football start sit
+    - dynasty fantasy football
+    - fantasy football waiver wire
+    - fantasy football rankings
+    - nfl dfs picks
+    - nfl player props picks
+    - best ball fantasy football
+  results_per_query: 30
+  max_new_channels: 40              # per run, to stay polite
+  min_long_videos: 50
+  max_shorts: 0
+  min_subscribers: 2000
+  max_subscribers: 750000
+  active_within_days: 30
+  check_socials: true
+  min_score: 60
+
+publish:
+  public_base_url: ""               # e.g. https://mac-mini.your-tailnet.ts.net:8443 (needed for creators to connect accounts)
+  retry_limit: 3
+  tiktok_mode: direct               # direct = post; inbox = send to the creator's TikTok drafts
+  instagram_upload: resumable       # resumable = upload bytes; url = Instagram fetches from public_base_url
+  graph_api_version: v23.0
+
+clients:
+  # status: prospect -> clips render for a sample/pitch reel, nothing ever posts
+  #         client   -> approved clips post to accounts the creator connected
+  #         paused   -> nothing new is processed
+  - slug: fantasy-footballers
+    name: The Fantasy Footballers
+    youtube: https://www.youtube.com/channel/UC-No2ITxJsNt50oJQ3fLmUA   # their main channel (by ID, so a handle change can't break it)
+    status: prospect
+    backfill: 3                     # recent episodes to process on first sync
+    sample_videos: 2                # episodes to process while still a prospect
+    min_source_minutes: 8
+    hashtags: ["#fantasyfootball", "#nfl", "#fantasyfootballers"]
+    posting:
+      timezone: America/New_York
+      slots: ["12:15", "19:30"]     # per account per day
+      platforms: [youtube, tiktok, instagram]
+    # Their DFS, betting and dynasty shows all post on the main channel, so episodes
+    # are routed by title. First matching show wins, and main catches the rest.
+    # If DFS and betting turn out to be one combined show, delete the betting block and
+    # add its patterns to dfs.
+    # These patterns are a starting guess: check the Videos page after the first sync and tune them.
+    shows:
+      - slug: dfs
+        name: Fantasy Footballers DFS
+        match: ['\bDFS\b', 'DraftKings', 'FanDuel', '\bShowdown\b', '\bGPP\b', 'Cash Game']
+        hashtags: ["#dfs", "#draftkings", "#fanduel"]
+      - slug: betting
+        name: Fantasy Footballers Betting
+        match: ['\bBet(s|ting|tor)?\b', '\bProps?\b', '\bParlays?\b', 'Against the Spread', '\bATS\b', '\bOdds\b']
+        hashtags: ["#nflbets", "#sportsbetting", "#playerprops"]
+      - slug: dynasty
+        name: Fantasy Footballers Dynasty
+        match: ['\bDynasty\b', '\bRookies?\b', '\bDevy\b', '\bKeeper\b']
+        hashtags: ["#dynastyfantasyfootball", "#dynasty"]
+      - slug: main
+        name: The Fantasy Footballers
+        match: []                   # empty = catch-all

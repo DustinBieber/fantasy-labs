@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Connect accounts{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<div class="center">
+  <h1>Connect {{ client.name }}</h1>
+  <p class="lede">Connect the accounts you'd like clips posted to. You'll sign in on each platform's own page, and we never see your password. Every clip links back to your full episode. You can disconnect any account here at any time, and posting to it stops immediately.</p>
+
+  {% for s in shows %}
+  <section class="acct" style="margin-bottom:14px">
+    <h3>{{ s.name }}</h3>
+    {% for p in client.posting.platforms %}
+      {% set a = accounts.get((s.slug, p)) %}
+      <div class="p">
+        <span>{{ {'youtube': 'YouTube Shorts', 'tiktok': 'TikTok', 'instagram': 'Instagram Reels'}[p] }}
+          {% if a %}<span class="small dim">· {{ a.display_name }}</span>{% endif %}</span>
+        {% if a %}
+          <form method="post" action="/connect/{{ token }}/disconnect/{{ s.slug }}/{{ p }}">{{ disconnect_csrf(token, s.slug, p) }}<button class="no">Disconnect</button></form>
+        {% elif configured[p] %}
+          <a class="btn" href="/connect/{{ token }}/start/{{ s.slug }}/{{ p }}">Connect</a>
+        {% else %}
+          <span class="small dim">coming soon</span>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </section>
+  {% endfor %}
+  <p class="small dim">Instagram needs a professional (creator or business) account. TikTok may ask you to confirm each permission.</p>
+</div>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Leads{% endblock %}
+{% block content %}
+<div class="row">
+  <div class="grow">
+    <h1>Leads</h1>
+    <p class="lede">Channels with a deep long-form library and little or no short-form presence. Scored on video count, Shorts, linked TikTok and Instagram, subscribers and recent activity.</p>
+  </div>
+  <form method="post" action="/discover">{{ csrf_input }}<button class="go">Find new leads</button></form>
+</div>
+<nav style="margin-bottom:14px">
+  {% for s in ['qualified','new','pitched','client','passed'] %}
+  <a href="/leads?status={{ s }}" class="{{ 'on' if s == status }}">{{ s }} ({{ counts.get(s, 0) }})</a>
+  {% endfor %}
+</nav>
+<div class="card scroll">
+<table>
+  <thead><tr><th class="num">Score</th><th>Channel</th><th class="num">Subs</th><th class="num">Long</th><th class="num">Shorts</th><th>TikTok</th><th>Instagram</th><th>Last upload</th><th></th></tr></thead>
+  <tbody>
+  {% for l in leads %}
+  <tr id="{{ l.channel_id }}">
+    <td class="num"><span class="tag signal">{{ l.score|int }}</span></td>
+    <td class="wide"><a href="{{ l.url }}" target="_blank" rel="noopener">{{ l.title }}</a>
+      <div class="small dim">{{ (l.reasons|loads)|join(' · ') }}</div>
+      <div class="small dim">found via “{{ l.found_via }}”{% if l.avg_minutes %} · avg {{ l.avg_minutes }} min{% endif %}</div>
+      {% for link in (l.links|loads) %}<a class="small" href="{{ link }}" target="_blank" rel="noopener">{{ link.split('/')[2] }}</a> {% endfor %}
+      {% if l.pitch %}<pre class="pitch">{{ l.pitch }}</pre>{% endif %}
+    </td>
+    <td class="num">{{ '{:,}'.format(l.subscribers) if l.subscribers else '?' }}</td>
+    <td class="num">{{ l.long_videos }}</td>
+    <td class="num">{{ l.shorts if l.shorts is not none else '?' }}</td>
+    <td class="small">{% if l.tiktok %}<a href="https://www.tiktok.com/@{{ l.tiktok }}" target="_blank" rel="noopener">@{{ l.tiktok }}</a><div class="dim">{{ l.tiktok_videos if l.tiktok_videos is not none else '?' }} videos</div>{% else %}<span class="tag gain">none</span>{% endif %}</td>
+    <td class="small">{% if l.instagram %}<a href="https://www.instagram.com/{{ l.instagram }}/" target="_blank" rel="noopener">@{{ l.instagram }}</a><div class="dim">{{ l.instagram_posts if l.instagram_posts is not none else '?' }} posts</div>{% else %}<span class="tag gain">none</span>{% endif %}</td>
+    <td class="small mono">{{ (l.last_upload or '')[:10] }}</td>
+    <td>
+      <form method="post" action="/leads/{{ l.channel_id }}/pitch">{{ csrf_input }}<button>{{ 'Redo pitch' if l.pitch else 'Draft pitch' }}</button></form>
+      <form method="post" action="/leads/{{ l.channel_id }}/status" class="row" style="margin-top:6px">{{ csrf_input }}
+        <select name="status" aria-label="Lead status" onchange="this.form.submit()">
+          {% for s in ['new','qualified','pitched','client','passed'] %}<option value="{{ s }}" {{ 'selected' if s == l.status }}>{{ s }}</option>{% endfor %}
+        </select>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="9" class="dim">No {{ status }} leads. Discovery runs once a day during work hours, or tap Find new leads.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="small dim" style="margin-top:12px">Pitches are drafts for you to send yourself. Nothing is emailed automatically. When a creator says yes, add them under <span class="mono">clients:</span> in config.yaml.</p>
+{% endblock %}

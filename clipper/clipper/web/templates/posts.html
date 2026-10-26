@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Posts{% endblock %}
+{% block content %}
+<h1>Posts</h1>
+<p class="lede">Approved clips go into each account's next free posting slot. Times shown in your timezone.</p>
+<div class="card scroll">
+<table>
+  <thead><tr><th>When</th><th>Clip</th><th>Account</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for p in posts %}
+  <tr>
+    <td class="mono small">{{ p.scheduled_for|local }}</td>
+    <td class="wide"><a href="/review?status=approved#clip-{{ p.clip_id }}">{{ p.hook or p.title }}</a>
+      {% if p.error %}<div class="small lvl-error">{{ p.error }}</div>{% endif %}</td>
+    <td class="small">{{ p.platform }}<div class="dim">{{ p.client }}/{{ p.show }}</div></td>
+    <td><span class="tag {{ 'gain' if p.status == 'posted' else ('loss' if p.status == 'failed' else '') }}">{{ p.status }}</span>
+      {% if p.remote_url %}<div class="small"><a href="{{ p.remote_url }}" target="_blank" rel="noopener">view</a></div>
+      {% elif p.remote_id %}<div class="small dim mono">{{ p.remote_id }}</div>{% endif %}</td>
+    <td>
+      {% if p.status == 'failed' %}<form method="post" action="/posts/{{ p.id }}/retry">{{ csrf_input }}<button>Retry</button></form>{% endif %}
+      {% if p.status == 'queued' %}<form method="post" action="/posts/{{ p.id }}/cancel">{{ csrf_input }}<button class="no">Cancel</button></form>{% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="dim">Nothing scheduled yet. Approve clips for a creator whose accounts are connected.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

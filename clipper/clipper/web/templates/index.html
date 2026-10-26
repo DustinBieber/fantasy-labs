@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="row">
+  <div class="grow">
+    <h1>Overview</h1>
+    <p class="lede">
+      Worker {% if busy %}<span class="tag signal">running</span>{% elif in_window %}<span class="tag gain">in work hours</span>{% else %}<span class="tag">outside work hours</span>{% endif %}
+      · last check {{ last_tick | local if last_tick else "never" }}
+      · picker <span class="mono">{{ model }}</span> ({{ tier }})
+    </p>
+  </div>
+  <form method="post" action="/run">{{ csrf_input }}<button class="go" type="submit">Run now</button></form>
+</div>
+
+<div class="stats">
+  <a class="stat hot" href="/review" style="text-decoration:none"><b>{{ counts.get('ready', 0) }}</b><span>Clips to review</span></a>
+  <div class="stat"><b>{{ posts.get('queued', 0) }}</b><span>Posts scheduled</span></div>
+  <div class="stat"><b>{{ posts.get('posted', 0) }}</b><span>Posted</span></div>
+  <div class="stat"><b>{{ videos.get('new', 0) + videos.get('picked', 0) }}</b><span>Episodes queued</span></div>
+  <div class="stat"><b>{{ leads or 0 }}</b><span>Qualified leads</span></div>
+  <div class="stat"><b>${{ ('%.2f' if spend >= 1 or spend == 0 else '%.3f') % spend }}</b><span>AI spend / ${{ '%.0f' % budget }} month</span></div>
+</div>
+
+{% if posts.get('failed') or counts.get('failed') or videos.get('failed') %}
+<h2>Needs attention</h2>
+<p>
+  {% if posts.get('failed') %}<a href="/posts">{{ posts.failed }} failed posts</a> · {% endif %}
+  {% if counts.get('failed') %}{{ counts.failed }} clips failed to render · {% endif %}
+  {% if videos.get('failed') %}<a href="/videos">{{ videos.failed }} episodes failed</a>{% endif %}
+</p>
+{% endif %}
+
+<h2>Activity</h2>
+<ul class="events">
+  {% for e in events %}
+  <li><time>{{ e.ts | local }}</time><span class="lvl-{{ e.level }}">{{ e.message }}</span></li>
+  {% else %}
+  <li class="dim">Nothing yet. The worker syncs creators and processes episodes during work hours, or tap Run now.</li>
+  {% endfor %}
+</ul>
+{% endblock %}
