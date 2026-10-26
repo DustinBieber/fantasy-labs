@@ -17,6 +17,7 @@ LABEL=com.opshub.server
 UPDATE_LABEL=com.opshub.update
 UPDATE_PLIST="/Library/LaunchDaemons/$UPDATE_LABEL.plist"
 HOST="${OPSHUB_HOST:-127.0.0.1}"
+PORT="${OPSHUB_PORT:-8000}"  # another service on 8000 (e.g. Family Hub)? install with OPSHUB_PORT=8010
 RUN_AS="${SUDO_USER:-$(id -un)}"
 AGENT="/Users/$RUN_AS/Library/LaunchAgents/$LABEL.plist"
 DAEMON="/Library/LaunchDaemons/$LABEL.plist"
@@ -41,6 +42,7 @@ if [ "${1:-}" = "--auto-update" ]; then
   <key>Label</key><string>$UPDATE_LABEL</string>
   <key>WorkingDirectory</key><string>$DIR</string>
   <key>ProgramArguments</key><array><string>/bin/bash</string><string>$DIR/run/update-mac.sh</string></array>
+  <key>EnvironmentVariables</key><dict><key>OPSHUB_PORT</key><string>$PORT</string></dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>${UPDATE_HOUR:-3}</integer><key>Minute</key><integer>${UPDATE_MINUTE:-15}</integer></dict>
   <key>StandardOutPath</key><string>$DIR/logs/update.log</string>
   <key>StandardErrorPath</key><string>$DIR/logs/update.log</string>
@@ -74,7 +76,7 @@ plist() {  # $1 = include UserName (daemon)
   <key>WorkingDirectory</key><string>$DIR</string>
   <key>ProgramArguments</key><array>
     <string>$DIR/.venv/bin/python</string><string>-m</string><string>opshub</string><string>serve</string>
-    <string>--host</string><string>$HOST</string><string>--port</string><string>8000</string>
+    <string>--host</string><string>$HOST</string><string>--port</string><string>$PORT</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -91,12 +93,12 @@ if [ "${1:-}" = "--boot" ]; then
   plist yes > "$DAEMON"; chown root:wheel "$DAEMON"; chmod 644 "$DAEMON"
   launchctl bootout "system/$LABEL" 2>/dev/null || true
   launchctl bootstrap system "$DAEMON"
-  echo "Ops Hub starts whenever this Mac boots (listening on $HOST:8000). Logs: $DIR/logs/opshub.log"
+  echo "Ops Hub starts whenever this Mac boots (listening on $HOST:$PORT). Logs: $DIR/logs/opshub.log"
 else
   mkdir -p "$(dirname "$AGENT")"
   plist no > "$AGENT"
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$AGENT"
-  echo "Ops Hub runs while $RUN_AS is logged in (listening on $HOST:8000). Logs: $DIR/logs/opshub.log"
+  echo "Ops Hub runs while $RUN_AS is logged in (listening on $HOST:$PORT). Logs: $DIR/logs/opshub.log"
 fi
-echo "Open http://localhost:8000 on this Mac. Also: System Settings > Energy > Prevent automatic sleeping."
+echo "Open http://localhost:$PORT on this Mac. Also: System Settings > Energy > Prevent automatic sleeping."

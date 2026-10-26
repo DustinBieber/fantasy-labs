@@ -8,6 +8,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 cd "$(dirname "$0")/.."
 BRANCH="${OPSHUB_BRANCH:-main}"
+PORT="${OPSHUB_PORT:-8000}"
 OWNER=$(stat -f %Su . 2>/dev/null || stat -c %U .)
 # The nightly job runs as root; git and pip must run as the checkout's owner (their GitHub login, their files).
 as_owner() { if [ "$(id -u)" = 0 ] && [ "$OWNER" != root ]; then sudo -H -u "$OWNER" "$@"; else "$@"; fi; }
@@ -35,7 +36,7 @@ restart() {
   fi
 }
 healthy() {
-  for _ in $(seq 1 90); do curl -sf http://localhost:8000/healthz >/dev/null && return 0; sleep 1; done
+  for _ in $(seq 1 90); do curl -sf http://localhost:$PORT/healthz >/dev/null && return 0; sleep 1; done
   return 1
 }
 
@@ -43,7 +44,7 @@ as_owner .venv/bin/pip install --quiet -e .
 restart || exit 0
 sleep 3  # let the old process exit before asking the new one
 if healthy; then
-  echo "Updated and restarted. Check http://localhost:8000"
+  echo "Updated and restarted. Check http://localhost:$PORT"
 else
   echo "The new version didn't start; going back to $(git rev-parse --short "$PREV"). Last log lines:"
   tail -n 30 logs/opshub.log 2>/dev/null || true

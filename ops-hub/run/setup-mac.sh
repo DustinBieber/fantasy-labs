@@ -24,13 +24,14 @@ PY
   echo "Saved. You'll log in as 'ops' with that password."
 fi
 echo "Installing the background service (macOS asks for your Mac login password)..."
-sudo OPSHUB_HOST=0.0.0.0 ./run/install-mac-service.sh --boot
-sudo ./run/install-mac-service.sh --auto-update
+PORT="${OPSHUB_PORT:-8000}"
+sudo OPSHUB_HOST=0.0.0.0 OPSHUB_PORT="$PORT" ./run/install-mac-service.sh --boot
+sudo OPSHUB_PORT="$PORT" ./run/install-mac-service.sh --auto-update
 printf "Starting"
-for _ in $(seq 1 90); do curl -sf http://localhost:8000/healthz >/dev/null && break; printf "."; sleep 1; done; echo
-if curl -sf http://localhost:8000/healthz >/dev/null; then
-  echo "Ops Hub is up: http://localhost:8000 here, http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:8000 from the MacBook."
-  open "http://localhost:8000/#setup"
+for _ in $(seq 1 90); do curl -sf http://localhost:$PORT/healthz >/dev/null && break; printf "."; sleep 1; done; echo
+if curl -sf http://localhost:$PORT/healthz >/dev/null; then
+  echo "Ops Hub is up: http://localhost:$PORT here, http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:$PORT from the MacBook."
+  open "http://localhost:$PORT/#setup"
 else
   echo "It didn't start. Last log lines:"; tail -n 30 logs/opshub.log 2>/dev/null || true; exit 1
 fi

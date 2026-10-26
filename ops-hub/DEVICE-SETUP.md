@@ -206,3 +206,4 @@ All logins and data come with it.
 | Phone alerts arrive late | Battery settings in Part 5, step 4. |
 | Bot ignores plain messages in the group | `/setprivacy` → Disable in @BotFather. |
 | A connector says *error* | Setup tab → **Test** on that system shows the exact reason. |
+| Family Hub on the same Mac, one of them won't start | Both use port 8000 by default. Keep Ops Hub on 8000 (its Google and Lightspeed sign-ins expect it) and reinstall Family Hub with `FAMILY_HUB_PORT=8001`. Or install Ops Hub with `OPSHUB_PORT=8010 ./run/setup-mac.sh` and use `:8010` everywhere, including the Google redirect URI. |
