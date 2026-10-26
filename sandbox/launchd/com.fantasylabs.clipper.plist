@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template: sandbox.sh native-install fills in __VENV__ and __DATA__ and installs it to ~/Library/LaunchAgents. -->
+<!-- Template: sandbox.sh native-install fills in __VENV__, __DATA__ and __FFBIN__ and installs it to ~/Library/LaunchAgents. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.fantasylabs.clipper</string>
@@ -12,7 +12,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>CLIPPER_DATA</key><string>__DATA__/clipper</string>
-    <key>PATH</key><string>__VENV__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>__FFBIN__:__VENV__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>WorkingDirectory</key><string>__DATA__/clipper</string>
   <key>RunAtLoad</key><true/>

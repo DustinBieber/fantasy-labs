@@ -86,7 +86,7 @@ clients:
   #         paused   -> nothing new is processed
   - slug: fantasy-footballers
     name: The Fantasy Footballers
-    youtube: https://www.youtube.com/@TheFantasyFootballers
+    youtube: https://www.youtube.com/channel/UC-No2ITxJsNt50oJQ3fLmUA   # their main channel (by ID, so a handle change can't break it)
     status: prospect
     backfill: 3                     # recent episodes to process on first sync
     sample_videos: 2                # episodes to process while still a prospect
@@ -98,6 +98,8 @@ clients:
       platforms: [youtube, tiktok, instagram]
     # Their DFS, betting and dynasty shows all post on the main channel, so episodes
     # are routed by title. First matching show wins, and main catches the rest.
+    # If DFS and betting turn out to be one combined show, delete the betting block and
+    # add its patterns to dfs.
     # These patterns are a starting guess: check the Videos page after the first sync and tune them.
     shows:
       - slug: dfs

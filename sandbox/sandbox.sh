@@ -19,7 +19,7 @@ die()  { warn "$*"; exit 1; }
 has()  { command -v "$1" >/dev/null 2>&1; }
 
 mode() { cat "$MODE_FILE" 2>/dev/null || echo docker; }
-compose() { (cd "$HERE" && docker compose "$@"); }
+compose() { (cd "$HERE" && docker compose ${1+"$@"}); }
 
 need_brew() {
   has brew || die "Homebrew is required: https://brew.sh"
@@ -30,18 +30,42 @@ need_docker() {
   docker info >/dev/null 2>&1 || die "Docker is not running. Open Docker Desktop (or run: colima start --cpu 4 --memory 8)"
 }
 
+# Homebrew's plain ffmpeg (slimmed in 2026) has no libass, so native mode uses ffmpeg-full for burned-in captions.
+ffbin() {
+  local p
+  p="$(brew --prefix ffmpeg-full 2>/dev/null || true)/bin"
+  if [ -x "$p/ffmpeg" ]; then echo "$p"; else dirname "$(command -v ffmpeg 2>/dev/null || echo /opt/homebrew/bin/ffmpeg)"; fi
+}
+ffmpeg_ok() { "$1/ffmpeg" -hide_banner -filters 2>/dev/null | grep ' subtitles ' >/dev/null; }
+
+ensure_ffmpeg() {
+  ffmpeg_ok "$(ffbin)" && return 0
+  say "Installing ffmpeg-full (Homebrew's ffmpeg with libass, needed for captions)"
+  brew install ffmpeg-full || { brew unlink ffmpeg >/dev/null 2>&1 || true; brew install ffmpeg-full; }
+  ffmpeg_ok "$(ffbin)" || die "ffmpeg still has no 'subtitles' filter. Try: brew reinstall ffmpeg-full"
+}
+
 clipper() {
   if [ "$(mode)" = native ]; then
-    CLIPPER_DATA="$DATA" "$VENV/bin/clipper" "$@"
-  elif compose ps --status running --services 2>/dev/null | grep -q '^clipper$'; then
-    compose exec clipper clipper "$@"
+    PATH="$(ffbin):$VENV/bin:$PATH" CLIPPER_DATA="$DATA" "$VENV/bin/clipper" ${1+"$@"}
+  elif compose ps --status running --services 2>/dev/null | grep '^clipper$' >/dev/null; then
+    compose exec clipper clipper ${1+"$@"}
   else
-    compose run --rm --no-deps clipper clipper "$@"
+    compose run --rm --no-deps clipper clipper ${1+"$@"}
   fi
 }
 
+# Local Whisper fallback: MLX on Apple Silicon. CLIPPER_EXTRAS= (empty) skips it for a faster install.
+extras_spec() {
+  local e
+  if [ "$(uname -m)" = arm64 ]; then e="${CLIPPER_EXTRAS-mlx}"; else e="${CLIPPER_EXTRAS-whisper}"; fi
+  [ -n "$e" ] && echo "[$e]" || true
+}
+
+agent_loaded() { launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+
 install_fonts() {
-  if [ "$(uname)" = Darwin ] && has brew && ! ls "$HOME/Library/Fonts" /Library/Fonts 2>/dev/null | grep -qi montserrat; then
+  if [ "$(uname)" = Darwin ] && has brew && ! ls "$HOME/Library/Fonts" /Library/Fonts 2>/dev/null | grep -i montserrat >/dev/null; then
     say "Installing the Montserrat caption font"
     brew install --cask font-montserrat || warn "Font install failed; captions will use a fallback font."
   fi
@@ -70,12 +94,14 @@ cmd_setup() {
     compose run --rm --no-deps clipper clipper init
     install_fonts
   fi
+  local start="$0 up"
+  [ "$want" = native ] && start="$0 restart   (it's already running; this loads your edits)"
   cat <<EOF
 
 Next:
   1. Add your keys:   open -e "$DATA/.env"        (ANTHROPIC_API_KEY is optional; blank = free mode)
   2. Review settings: open -e "$DATA/config.yaml"
-  3. Start it:        $0 up
+  3. Start it:        $start
   4. Check it:        $0 doctor
 EOF
   keep_awake_tip
@@ -85,21 +111,20 @@ cmd_native_install() {
   [ "$(uname)" = Darwin ] || die "native mode is for macOS; use Docker elsewhere"
   need_brew
   say "Installing ffmpeg and python via Homebrew"
-  brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+  ensure_ffmpeg
   has python3.12 || brew install python@3.12
   install_fonts
   say "Creating virtualenv at $VENV"
   mkdir -p "$(dirname "$VENV")" "$DATA/logs"
   [ -x "$VENV/bin/python" ] || python3.12 -m venv "$VENV"
-  local extras=whisper
-  [ "$(uname -m)" = arm64 ] && extras=mlx      # Apple Silicon: fast local Whisper via MLX
   "$VENV/bin/pip" install -q --upgrade pip
-  "$VENV/bin/pip" install -q -e "$REPO/clipper[$extras]"
+  "$VENV/bin/pip" install -q -e "$REPO/clipper$(extras_spec)"
   CLIPPER_DATA="$DATA" "$VENV/bin/clipper" init
   echo native > "$MODE_FILE"
   say "Installing LaunchAgent $LABEL"
   mkdir -p "$(dirname "$PLIST")"
-  sed -e "s#__VENV__#$VENV#g" -e "s#__DATA__#$SANDBOX_DATA#g" "$HERE/launchd/$LABEL.plist" > "$PLIST"
+  sed -e "s#__VENV__#$VENV#g" -e "s#__DATA__#$SANDBOX_DATA#g" -e "s#__FFBIN__#$(ffbin)#g" \
+    "$HERE/launchd/$LABEL.plist" > "$PLIST"
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
   say "Running natively. Dashboard: http://localhost:8787"
@@ -114,7 +139,11 @@ cmd_native_uninstall() {
 
 cmd_up() {
   if [ "$(mode)" = native ]; then
-    launchctl kickstart -k "gui/$(id -u)/$LABEL"
+    if agent_loaded; then
+      launchctl kickstart -k "gui/$(id -u)/$LABEL"
+    else
+      launchctl bootstrap "gui/$(id -u)" "$PLIST"
+    fi
   else
     need_docker
     compose up -d --build
@@ -134,7 +163,7 @@ cmd_restart() {
 cmd_down() {
   if [ "$(mode)" = native ]; then
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    say "Stopped. '$0 native-install' starts it again."
+    say "Stopped. '$0 up' starts it again."
   else
     compose down
   fi
@@ -162,7 +191,7 @@ cmd_update() {
   say "Pulling the latest code"
   git -C "$REPO" pull --ff-only
   if [ "$(mode)" = native ]; then
-    "$VENV/bin/pip" install -q -e "$REPO/clipper[$( [ "$(uname -m)" = arm64 ] && echo mlx || echo whisper )]"
+    "$VENV/bin/pip" install -q -e "$REPO/clipper$(extras_spec)"
     "$VENV/bin/pip" install -q --upgrade yt-dlp
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
   else
@@ -192,7 +221,7 @@ EOF
 cmd="${1:-help}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
-  setup) cmd_setup "$@" ;;
+  setup) cmd_setup ${1+"$@"} ;;
   up|start) cmd_up ;;
   down|stop) cmd_down ;;
   restart) cmd_restart ;;
@@ -201,7 +230,7 @@ case "$cmd" in
   doctor) clipper doctor ;;
   update) cmd_update ;;
   open) open "http://localhost:8787" ;;
-  cli) clipper "$@" ;;
+  cli) clipper ${1+"$@"} ;;
   native-install) cmd_native_install ;;
   native-uninstall) cmd_native_uninstall ;;
   *) usage ;;

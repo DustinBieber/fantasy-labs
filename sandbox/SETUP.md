@@ -22,9 +22,9 @@ Total time: about an hour, most of it waiting on installs. Total cost: $0. An An
 2. **Optional: get a Claude API key** for better clip picks (skip it to run 100% free).
    - Go to **platform.claude.com**, sign in, open **Billing**, and add $5 in credit. At these volumes that should last months.
    - Under **Limits**, set a monthly spend limit (say $10). That's a second safety net on top of the app's own $5/month cap.
-   - Under **API keys**, create a key and copy it somewhere safe for Part 2, step 8.
+   - Under **API keys**, create a key and copy it somewhere safe for Part 2, step 5.
 
-## Part 2: Mac mini (30–45 min, sitting at it once)
+## Part 2: Mac mini (about 30 min, sitting at it once)
 
 1. **System Settings:**
    - **General → Software Update:** install updates.
@@ -33,62 +33,54 @@ Total time: about an hour, most of it waiting on installs. Total cost: $0. An An
    - **General → Sharing:** turn on **Remote Login** (SSH) and **Screen Sharing**, so you can manage it from the MacBook Air.
    - Optional: **Users & Groups → Automatically log in as** your user. This only works with FileVault off. With FileVault on,
      after a power outage you'll have to log in at the Mac mini before the sandbox starts again.
-2. **Install Homebrew.** Open Terminal, paste the install command from **brew.sh**, and run the two "Next steps" lines it prints.
-3. **Install the tools:** `brew install git gh`
-4. **Tailscale:** install it from the Mac App Store, sign in with the **same account** as the MacBook Air, and turn on
+2. **Install Homebrew.** Open Terminal, paste the install command from **brew.sh**, and run the "Next steps" lines it prints.
+   This also installs Apple's command line tools, including `git`.
+3. **Tailscale:** install it from the Mac App Store, sign in with the **same account** as the MacBook Air, and turn on
    *Launch at login* in its menu-bar settings.
-5. **Docker Desktop:** download it from **docker.com/products/docker-desktop** (choose *Apple Silicon*). It's free for personal
-   use and small businesses. Open it once, accept the terms, and turn on **Settings → General → Start Docker Desktop when you
-   sign in**. Under **Resources**, give it 4 CPUs and 8 GB of memory.
-   Prefer no Docker at all? Skip this step and use native mode in step 7.
-6. **Get the code:**
+4. **Get the code and install** (about 10 minutes: ffmpeg, Python, the caption font, and the clipper):
    ```bash
-   gh auth login                       # GitHub.com → HTTPS → log in with browser
-   gh repo clone DustinBieber/fantasy-labs ~/fantasy-labs
-   cd ~/fantasy-labs
-   git checkout claude/dazzling-brown-2azho8   # until this branch is merged into main
-   ```
-7. **Build the sandbox:**
-   ```bash
+   git clone -b claude/dazzling-brown-2azho8 https://github.com/DustinBieber/fantasy-labs.git ~/fantasy-labs
    cd ~/fantasy-labs/sandbox
-   ./sandbox.sh setup                  # Docker: about 5–10 minutes the first time
+   ./sandbox.sh setup native
    ```
-   *Native alternative (no Docker, about 3x faster renders on Apple Silicon):* `./sandbox.sh setup native`
-8. **Add your key and grab your password:**
+   This runs it natively under launchd, which is the fastest option on Apple Silicon (hardware video encoder plus MLX Whisper).
+   *Prefer the Docker sandbox instead?* Install Docker Desktop from docker.com (Apple Silicon build; free for personal use and
+   small businesses), turn on *Start Docker Desktop when you sign in*, then run `./sandbox.sh setup` (no `native`) and use
+   `./sandbox.sh up` wherever these steps say `restart`. You get the same dashboard, more isolated but slower.
+5. **Add your key and grab your password:**
    ```bash
    open -e ~/sandbox-data/clipper/.env
    ```
-   Paste the Claude key after `ANTHROPIC_API_KEY=`, or leave it blank for free mode. Copy the `DASHBOARD_PASSWORD` value and
-   save it in your password manager. Save the file.
-9. **Start it and check it:**
+   Paste the Claude key after `ANTHROPIC_API_KEY=`, or leave it blank for free mode. Copy the `DASHBOARD_PASSWORD` value into
+   your password manager. Save the file.
+6. **Load your changes and check everything:**
    ```bash
-   ./sandbox.sh up
+   ./sandbox.sh restart
    ./sandbox.sh doctor
    ```
-   At this stage, warnings about *app keys* and *public_base_url* are expected. Everything marked `ok` or `warn` is fine.
-   Fix any `FAIL` line before going on.
-10. **Keep it awake on workdays** (asks for your Mac password):
-    ```bash
-    sudo pmset -c sleep 0 disksleep 0
-    sudo pmset repeat wakeorpoweron MTWRF 07:45:00
-    ```
-11. **Make the dashboard reachable from your devices (private to your tailnet):**
-    ```bash
-    tailscale serve --bg 8787
-    ```
-    It prints an address like `https://mac-mini.tail1234.ts.net`. Save it.
-    - If it says `command not found`, run `alias tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale` and try again.
-    - If it prints a link asking you to enable HTTPS, open it, click **Enable**, and run the command again.
-12. **First run:** `./sandbox.sh open`, log in as `admin` with your password, and tap **Run now**. The mini pulls The Fantasy
-    Footballers' channel and cuts sample clips from their 2 latest episodes. That takes about 10–30 minutes; watch it with
-    `./sandbox.sh logs`. Episodes appear under **Episodes** and finished clips under **Review**.
+   Warnings about *app keys* and *public_base_url* are expected for now. Fix any `FAIL` line before going on.
+7. **Keep it awake on workdays** (asks for your Mac password):
+   ```bash
+   sudo pmset -c sleep 0 disksleep 0
+   sudo pmset repeat wakeorpoweron MTWRF 07:45:00
+   ```
+8. **Make the dashboard reachable from your devices (private to your tailnet):**
+   ```bash
+   tailscale serve --bg 8787
+   ```
+   It prints an address like `https://mac-mini.tail1234.ts.net`. Save it.
+   - If it says `command not found`, run `alias tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale` and try again.
+   - If it prints a link asking you to enable HTTPS, open it, click **Enable**, and run the command again.
+9. **First run:** `./sandbox.sh open`, log in as `admin` with your password, and tap **Run now**. The mini pulls The Fantasy
+   Footballers' channel and cuts sample clips from their 2 latest episodes. That takes about 10–30 minutes; watch it with
+   `./sandbox.sh logs`. Episodes appear under **Episodes** and finished clips under **Review**.
 
 ## Part 3: Galaxy S24 Ultra (5 min)
 
 1. **Play Store → Tailscale.** Install it, sign in with the same account, and tap **Connect**. You can leave it on; it's light on
    battery. Optionally, under **Settings → Connections → More connection settings → VPN**, tap the gear next to Tailscale and
    turn on *Always-on VPN*.
-2. **Chrome:** open the address from Part 2, step 11, and log in as `admin` with your password. Let Chrome or Samsung Pass save it.
+2. **Chrome:** open the address from Part 2, step 8, and log in as `admin` with your password. Let Chrome or Samsung Pass save it.
 3. **Make it an app icon:** in Chrome, tap **⋮ → Add to Home screen → Add**. Name it "Clipper".
 4. **Reviewing clips:** open **Review** and tap play on a clip. Then:
    - Edit the **Hook** (the headline burned into the video) and tap **Save** to re-render it. Edit the **Title** and **Caption**
@@ -151,5 +143,5 @@ connect your own test accounts with its connect link, and approve one clip to wa
 | Phone can't load the dashboard | Is Tailscale connected on the phone? Run `./sandbox.sh status` on the mini (via SSH from the MacBook Air). |
 | No new clips | Check whether it's inside work hours (Overview shows it), or tap **Run now**. Then check the Episodes page for errors. |
 | YouTube download or caption errors | `./sandbox.sh update` gets the newest yt-dlp. |
-| Mini rebooted and nothing runs | Log in on the mini once (FileVault), and make sure Docker Desktop starts at login. |
+| Mini rebooted and nothing runs | Log in on the mini once (FileVault). In Docker mode, also make sure Docker Desktop starts at login. |
 | Anything else | `./sandbox.sh doctor` and `./sandbox.sh logs`. The full reference is in `README.md`. |

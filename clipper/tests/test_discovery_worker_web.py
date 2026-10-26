@@ -158,11 +158,11 @@ def test_public_clip_url_requires_signature(web, db, cfg):
 
 def test_discover_scores_leads_and_skips_existing_clients(cfg, db, monkeypatch):
     monkeypatch.setattr(discovery.ytdlp, "search", lambda q, n: [
-        {"channel_id": "UCff"}, {"channel_id": "UCnew"}, {"channel_id": "UCnew"}])
+        {"channel_id": "UC-No2ITxJsNt50oJQ3fLmUA"}, {"channel_id": "UCnew"}, {"channel_id": "UCnew"}])
     recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
 
     def inspect(cid, cfg):
-        handle = "@TheFantasyFootballers" if cid == "UCff" else "@DynastyDugout"
+        handle = "@TheFantasyFootballers" if cid.startswith("UC-No2") else "@DynastyDugout"
         return {"channel_id": cid, "handle": handle, "title": handle[1:], "url": f"https://www.youtube.com/channel/{cid}",
                 "subscribers": 50_000, "long_videos": 120, "shorts": 0, "avg_minutes": 60, "last_upload": recent}
 

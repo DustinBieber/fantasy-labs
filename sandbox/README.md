@@ -25,9 +25,9 @@ Two guardrails are built into the code:
 On the Mac mini:
 
 ```bash
-git clone https://github.com/DustinBieber/fantasy-labs.git ~/fantasy-labs
+git clone -b claude/dazzling-brown-2azho8 https://github.com/DustinBieber/fantasy-labs.git ~/fantasy-labs
 cd ~/fantasy-labs/sandbox
-./sandbox.sh setup            # Docker (recommended).  Or: ./sandbox.sh setup native
+./sandbox.sh setup native     # fastest on Apple Silicon.  Or: ./sandbox.sh setup  (Docker)
 ```
 
 **Docker mode** needs a Docker runtime: Docker Desktop (free for personal use and small businesses) or colima (free, open source).
@@ -202,6 +202,8 @@ to cut samples, then `client` once they've connected.
 
 ## 9. Troubleshooting
 
+- **`doctor` says ffmpeg can't burn in captions.** Since early 2026 Homebrew's plain `ffmpeg` is a slim build without libass.
+  `./sandbox.sh setup native` installs `ffmpeg-full` for you; to fix by hand run `brew install ffmpeg-full`, then `./sandbox.sh native-install`.
 - **`doctor` says the font is missing.** Captions fall back to a default font. For native mode run `brew install --cask font-montserrat`.
   For Docker, drop `.ttf` files in `~/sandbox-data/clipper/fonts/`.
 - **Downloads or captions fail with "Sign in to confirm you're not a bot" or format errors.** YouTube changes often. Run

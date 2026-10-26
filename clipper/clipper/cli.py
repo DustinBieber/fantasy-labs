@@ -53,7 +53,8 @@ def cmd_doctor(args) -> None:
     line(bool(ffmpeg), "ffmpeg", ffmpeg or "install it (brew install ffmpeg)")
     if ffmpeg:
         filters = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
-        line(" subtitles " in filters, "ffmpeg subtitles (libass)", "" if " subtitles " in filters else "your ffmpeg lacks libass")
+        line(" subtitles " in filters, "ffmpeg subtitles (libass)",
+             "" if " subtitles " in filters else "this ffmpeg can't burn in captions; on a Mac: brew install ffmpeg-full")
     line(bool(shutil.which("ffprobe")), "ffprobe")
     line(bool(shutil.which("deno")), "deno (yt-dlp's JS runtime)", shutil.which("deno") or "pip install deno", required=False)
     import yt_dlp
