@@ -1,6 +1,8 @@
 #!/bin/bash
 # Double-click in Finder to start Ops Hub on this Mac, then open http://localhost:8000
 # First run installs everything (needs Python 3.11+: https://www.python.org/downloads/).
+# sudo and Finder start with a bare PATH; Homebrew lives here on Apple-silicon and Intel Macs.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 cd "$(dirname "$0")/.." || exit 1
 PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)
 if [ ! -x .venv/bin/python ]; then

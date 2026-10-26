@@ -1,6 +1,8 @@
 #!/bin/bash
 # Pull the latest Ops Hub, install any new dependencies, restart the background service.
 set -euo pipefail
+# sudo and Finder start with a bare PATH; Homebrew lives here on Apple-silicon and Intel Macs.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 cd "$(dirname "$0")/.."
 git pull --ff-only
 .venv/bin/pip install --quiet -e .

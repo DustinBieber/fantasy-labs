@@ -43,24 +43,18 @@ In Terminal on the Mac mini:
 ```bash
 gh auth login                          # GitHub: choose "Login with a web browser"
 cd ~ && gh repo clone DustinBieber/fantasy-labs -- -b ccr-a698dc74-4nq2oa
-cd ~/fantasy-labs/ops-hub
-cp .env.example .env && open -e .env
+cd ~/fantasy-labs/ops-hub && ./run/setup-mac.sh
 ```
 
-In the `.env` window that opens, set a long password and save:
+`setup-mac.sh` does the rest:
 
-```
-OPSHUB_PASSWORD=pick-a-long-password-here
-```
+1. Asks you to choose a dashboard password (8+ characters, no spaces).
+2. Asks for your Mac login password once.
+3. Installs Ops Hub as a service that starts with the Mac and is reachable from the MacBook and
+   phone. The first run takes a minute or two.
+4. Opens **http://localhost:8000/#setup**. Log in as `ops` with the dashboard password.
 
-Then start Ops Hub as a service that boots with the Mac and is reachable from your other devices:
-
-```bash
-sudo OPSHUB_HOST=0.0.0.0 ./run/install-mac-service.sh --boot
-```
-
-If macOS asks whether *python* may accept incoming connections, click **Allow**. Then open
-**http://localhost:8000** on the Mac mini and log in as `ops` with your password. You'll see sample
+If macOS asks whether *python* may accept incoming connections, click **Allow**. You'll see sample
 data until your systems are connected.
 
 ## Part 3: Connect your systems (about an hour)

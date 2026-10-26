@@ -8,6 +8,8 @@
 # Reachable from the MacBook Air / phone? Set OPSHUB_PASSWORD in .env, then install with
 #   OPSHUB_HOST=0.0.0.0 ./run/install-mac-service.sh      (or: sudo OPSHUB_HOST=0.0.0.0 ... --boot)
 set -euo pipefail
+# sudo and Finder start with a bare PATH; Homebrew lives here on Apple-silicon and Intel Macs.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 cd "$(dirname "$0")/.."
 DIR=$(pwd)
 LABEL=com.opshub.server
