@@ -16,165 +16,136 @@ Run the app on **one computer only**: the Mac Mini. Two copies would mean two AI
 
 ## Set it up: Mac Mini, MacBook Air, Galaxy S24 Ultra
 
-The Mac Mini is the server and stays on. The MacBook Air and the phone are just screens; they install
-nothing except a browser bookmark, plus Tailscale and Telegram on the phone.
+The Mac Mini is the server and stays on. It also runs Family Hub: Family Hub uses port 8000, and Kalshi
+Edge uses **8100**, so the two don't collide. The MacBook Air and the phone are just screens.
 
-### Part 1: Mac Mini (about 20 minutes)
+### Part 1: Mac Mini (about 15 minutes, mostly waiting)
 
-1. **Keep it awake and coming back after power cuts.** Open System Settings → Energy (on older macOS:
-   Energy Saver) and turn on:
+If you already set the Mac Mini up for Family Hub (always on, automatic login, Tailscale), skip to step 3.
+
+1. **Keep it on.** Open System Settings → Energy (on older macOS: Energy Saver) and turn on:
    - Prevent automatic sleeping when the display is off;
-   - Wake for network access;
    - Start up automatically after a power failure.
 
-   The app also holds the Mac awake while it runs.
-2. **Log in by itself after a restart.** Open System Settings → Users & Groups → Automatically log in as →
-   your user. The app starts when you log in. If FileVault is on, macOS won't allow automatic login, so log
-   in once after any power cut.
-3. **Install Homebrew and Python.** Open Terminal (Spotlight: ⌘-Space, type Terminal) and run:
+   Then open System Settings → Users & Groups → **Automatically log in as** → your account. If that's
+   greyed out, FileVault is on; either turn FileVault off or log in by hand after every restart.
+2. **Optional: install Tailscale** for access away from home. Get it from tailscale.com/download/mac and
+   sign in. The installer then gives the dashboard a private https address.
+3. **Download.** Open Terminal (⌘ Space, type *Terminal*) and paste:
+   ```bash
+   cd ~ && rm -rf fantasy-labs && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip
    ```
-   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   brew install python@3.12
+   This is safe to repeat. Kalshi Edge keeps its data in `~/KalshiEdge` and Family Hub keeps its data in
+   `~/FamilyHub`; neither lives in `~/fantasy-labs`.
+4. **Install:**
+   ```bash
+   bash ~/fantasy-labs/kalshi-edge/mac/setup.sh
    ```
-   Follow the "Next steps" lines Homebrew prints at the end; they add `brew` to your PATH.
-4. **Put the app in your home folder.** Don't use Desktop, Documents, or Downloads, because macOS blocks
-   background apps from those folders. If `kalshi-edge.zip` is in Downloads:
-   ```
-   cd ~ && unzip ~/Downloads/kalshi-edge.zip && cd ~/kalshi-edge
-   ```
-   If Safari already unzipped it into a `kalshi-edge` folder in Downloads, run this instead:
-   ```
-   mv ~/Downloads/kalshi-edge ~/kalshi-edge && cd ~/kalshi-edge
-   ```
-   Then clear the "downloaded from the internet" flag, so macOS doesn't stop the scripts:
-   ```
-   xattr -dr com.apple.quarantine ~/kalshi-edge
-   ```
-   If you use git instead: `git clone <your repo> ~/fantasy-labs && cd ~/fantasy-labs/kalshi-edge`.
-5. **Install and test:**
-   ```
-   ./start.sh test
-   ```
-   The first run builds a private Python environment (about a minute). All 114 tests should pass.
-6. **Set a dashboard password.** This one is required for the AI trader to ever go live. Run
-   `open -e .env` (it opens in TextEdit) and set `APP_PASSWORD=` to a long password. Add `ODDS_API_KEY=` if
-   you have one (see below). Save the file.
-7. **Prove the data sources:**
-   ```
-   ./start.sh smoke
-   ```
-   Read the VERIFY list at the end; every FAIL line comes with a hint. The AI trader lines (Kalshi API key,
-   Telegram) are expected to fail until you set those up in Part 4 and Part 5.
-8. **Run it in the background for good:**
-   ```
-   ./start.sh install
-   ```
-   It now starts at login, restarts itself if it ever stops, and keeps the Mac awake. Useful commands:
-   - `./start.sh status`: is it up?
-   - `./start.sh restart`: after you edit `.env`.
-   - `./start.sh logs`: watch the log (Ctrl+C to stop watching).
-   - `./start.sh uninstall`: remove the background service.
-9. **Allow it through the firewall.** If macOS asks whether Python may accept incoming connections, click
-   **Allow**. Your phone and MacBook need this.
-10. **Find the Mac Mini's address.** Open System Settings → Wi-Fi → Details next to your network → IP
-    address, for example `192.168.1.23`. On your home Wi-Fi, the dashboard is at `http://192.168.1.23:8000`.
-    To keep that address from changing, reserve it for the Mac Mini in your router's DHCP settings, or use
-    Tailscale (Part 2), whose name never changes.
+   It will:
+   - get Python if your Mac's is too old (no password needed);
+   - install the app into `~/KalshiEdge` and run the test suite;
+   - ask you to **choose a dashboard password**, or press Enter and it makes one and shows it to you once;
+   - ask for an optional **Odds API key** (free at the-odds-api.com; it's what prices spreads, totals, and
+     props);
+   - check every live data source once and print a **VERIFY** list. This takes a few minutes. The Kalshi
+     API key and Telegram lines are expected to fail for now.
+   - start the background service, which starts at login and restarts itself;
+   - offer to turn the AI trader on in **PAPER** mode. Answer **y**.
+   - print your addresses;
+   - offer to turn off sleep. Answer **y** and type your Mac password if it asks.
 
-### Part 2: Tailscale, to reach it away from home (optional, about 10 minutes)
+   If macOS asks whether Python may accept incoming network connections, click **Allow**.
 
-Tailscale links your own devices into a private network. You don't have to open any ports on your router.
+**Everyday commands** (Terminal on the Mac Mini):
 
-It is **not** a location workaround. Your Kalshi traffic still comes only from the Mac Mini at home in
-Hawaii. Never turn on a Tailscale "exit node" or any VPN for Kalshi.
+| Command | What it does |
+|---|---|
+| `~/KalshiEdge/kalshi status` | Is it running? Shows the trader's mode, equity, and go-live checklist. |
+| `~/KalshiEdge/kalshi stop` | Emergency stop: cancels its resting orders. Resume on the dashboard. |
+| `~/KalshiEdge/kalshi update` | Installs the latest version from GitHub. Your data and settings are kept. It runs the tests first and rolls back if the new version won't start. |
+| `~/KalshiEdge/kalshi restart` | Restarts the app. Do this after editing `~/KalshiEdge/kalshi-edge.env`. |
+| `~/KalshiEdge/kalshi smoke` | Re-checks the live data sources. |
+| `~/KalshiEdge/kalshi logs` | Watches the log (Ctrl+C to stop watching). |
+| `~/KalshiEdge/kalshi uninstall` | Removes the service. Your data stays in `~/KalshiEdge`. |
 
-1. Install Tailscale on the Mac Mini (Mac App Store or tailscale.com/download) and sign in. In its menu-bar
-   icon → Settings, choose **Install CLI** so the `tailscale` command works in Terminal.
-2. Install Tailscale on the MacBook Air and sign in with the same account.
-3. On the S24 Ultra, install **Tailscale** from Google Play, sign in with the same account, and turn it on.
-4. At login.tailscale.com → DNS, turn on **MagicDNS** and **HTTPS Certificates**.
-5. On the Mac Mini, run:
-   ```
-   tailscale serve --bg 8000
-   ```
-   It prints an address like `https://mac-mini.tail1234.ts.net`. That address works from your MacBook and
-   phone anywhere, over HTTPS, as long as Tailscale is on.
+### Part 2: Addresses
 
-   If your Tailscale version wants the longer form, use `tailscale serve --bg --https=443 http://localhost:8000`.
-   Check it with `tailscale serve status`.
+- **At home:** `http://<Mac Mini IP>:8100`. The installer prints it.
+- **Anywhere:** `https://<your-mac>.<tailnet>.ts.net:9443`, if Tailscale is installed. The installer prints
+  this too.
+  - This address is **private to your own Tailscale devices**, so the phone and MacBook need the Tailscale
+    app, signed in to the same account.
+  - Unlike Family Hub, it is deliberately **not** published on the public internet with Funnel, because
+    these are trading controls. Port 9443 can't be used by Funnel even by mistake.
+  - If the installer says the private address didn't work, turn on **MagicDNS** and **HTTPS
+    Certificates** at login.tailscale.com → DNS, then run the installer again.
+- Tailscale only connects your own devices. Your Kalshi traffic always comes from the Mac Mini at home in
+  Hawaii. Never turn on an "exit node" or any VPN for Kalshi.
 
 ### Part 3: MacBook Air (2 minutes)
 
-1. Open Safari or Chrome. At home, go to `http://<Mac Mini IP>:8000`; from anywhere, go to your
-   `https://….ts.net` address.
-2. Sign in with any username and your `APP_PASSWORD`, and let the browser save it.
+1. Open Safari or Chrome to one of the addresses above.
+2. Sign in with any username and your dashboard password, and let the browser save it.
 3. Add a shortcut:
    - Safari: File → Add to Dock.
    - Chrome: ⋮ → Cast, save, and share → Install page as app.
 
-Don't run `./start.sh` on the MacBook. The Mac Mini does all the work.
+Don't install the app itself on the MacBook. Two copies would mean two AI traders.
 
 ### Part 4: Galaxy S24 Ultra (5 minutes)
 
-1. **The dashboard as an app.**
-   1. Open **Chrome** and go to your `https://….ts.net` address. The `http://192.168…` address also works
-      at home.
-   2. Sign in with any username and your `APP_PASSWORD`.
-   3. Tap **⋮** → **Add to home screen** → **Install**.
-
-   With the HTTPS Tailscale address it opens full screen like an app. With the plain Wi-Fi address it's a
-   home-screen shortcut.
-2. **Alerts on your phone (Telegram).** The AI trader texts you fills, stops, errors, a daily summary, and
-   parlay tickets.
-   1. Install **Telegram** from Google Play and sign up.
-   2. In Telegram, search **@BotFather** → send `/newbot` → pick a name. It replies with a token like
-      `123456:ABC…`.
-   3. Open your new bot and send it any message, such as "hi".
-   4. On the Mac Mini, open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser. Find
-      `"chat":{"id":` followed by a number; that number is your chat id.
-   5. Put both in `.env` (`TELEGRAM_BOT_TOKEN=`, `TELEGRAM_CHAT_ID=`). Then run `./start.sh restart` and
-      `./start.sh smoke`. The smoke test sends "alerts work" to your phone.
-3. **Keep alerts and Tailscale alive.** Samsung's battery saver can silence them. Go to Settings → Apps →
-   Telegram → Battery → **Unrestricted**, and do the same for Tailscale.
+1. **The dashboard as an app.** Open **Chrome** to your address and sign in, then tap **⋮** → **Add to home
+   screen** → **Install**. With the `https://…ts.net:9443` address (Tailscale app on and signed in), it
+   opens full screen like an app. With the `http://` home address it's a shortcut.
+2. **Alerts (Telegram).** The AI trader texts you fills, stops, errors, a daily summary, and parlay
+   tickets.
+   1. Install **Telegram** from Google Play.
+   2. Message **@BotFather**, send `/newbot`, and copy the token it gives you.
+   3. Send your new bot any message.
+   4. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy the number after `"chat":{"id":`.
+   5. On the Mac Mini, run `open -e ~/KalshiEdge/kalshi-edge.env` and fill in `TELEGRAM_BOT_TOKEN` and
+      `TELEGRAM_CHAT_ID`.
+   6. Run `~/KalshiEdge/kalshi restart`, then `~/KalshiEdge/kalshi smoke`. Your phone gets "alerts work".
+3. Set **Telegram** and **Tailscale** to battery **Unrestricted** (Settings → Apps → the app → Battery), or
+   Samsung may silence them.
 
 ### Part 5: The AI trader, from paper to real money
 
-1. **Today: turn on Paper.** Open the **AI Trader** tab and tap **PAPER**. It now:
-   - scans every 2 minutes;
-   - places pretend maker orders on Tier S and Tier G edges (G at half size) in NFL singles and gas;
-   - logs parlay tickets;
-   - follows proven bettors through the edge engine, where their agreement is what lets Tier G trade.
-
-   It uses real prices but pretend money.
-2. **For 14 days, let it run.** Check the AI Trader tab or the daily Telegram summary. The go-live checklist
-   fills in as trades settle.
+1. **Today:** it's in **PAPER** (the installer asked). If you answered no, tap **PAPER** on the AI Trader
+   tab or run `~/KalshiEdge/kalshi paper`. It scans every 2 minutes and places pretend maker orders on
+   Tier S and Tier G edges (G at half size) at real prices.
+2. **For 14 days, let it run.** Check the AI Trader tab, `~/KalshiEdge/kalshi status`, or the daily
+   Telegram summary.
 3. **When every box is green:**
    1. On kalshi.com, open Account & security → **API Keys** → **Create Key**. If it asks about
       permissions, allow trading.
-   2. Kalshi downloads the private key **once** as a file. Move it to `~/.kalshi/kalshi-edge.pem` on the
-      Mac Mini:
-      ```
+   2. Move the downloaded private key file:
+      ```bash
       mkdir -p ~/.kalshi && mv ~/Downloads/<the key file> ~/.kalshi/kalshi-edge.pem && chmod 600 ~/.kalshi/kalshi-edge.pem
       ```
-   3. Never paste that key into a chat, an email, or `.env`. In `.env`, set `KALSHI_API_KEY_ID=<the Key ID
-      shown on screen>` and `KALSHI_PRIVATE_KEY_PATH=~/.kalshi/kalshi-edge.pem`.
-   4. Run `./start.sh restart`, then `./start.sh smoke`. "Kalshi API key signs requests" should PASS and
-      show your cash balance.
+      Never paste the key into a chat or an email.
+   3. In `~/KalshiEdge/kalshi-edge.env`, set `KALSHI_API_KEY_ID` (shown on screen) and
+      `KALSHI_PRIVATE_KEY_PATH='/Users/<you>/.kalshi/kalshi-edge.pem'`.
+   4. Run `~/KalshiEdge/kalshi restart`, then `~/KalshiEdge/kalshi smoke`. "Kalshi API key signs
+      requests" should PASS and show your cash balance.
    5. Deposit the $500 yourself in the Kalshi app. The trader can't move money.
-   6. On the AI Trader tab, tap **Run live check**. It places a 1¢ YES and a 1¢ NO order that cannot fill,
-      confirms Kalshi recorded exactly what it meant, and cancels both.
+   6. On the AI Trader tab, tap **Run live check**. It places 1¢ orders that can't fill, confirms Kalshi
+      recorded them exactly, and cancels them.
    7. Tap **LIVE** and type `LIVE` to confirm.
-4. **Anytime: tap STOP ALL.** It cancels every order the trader has resting and stops it until you tap
-   Resume. It also stops itself, with a Telegram alert, if:
+4. **Anytime: tap STOP ALL**, or run `~/KalshiEdge/kalshi stop`. It also stops itself, with an alert, if:
    - it is down $25 in a day;
    - it is down $50 in total;
    - it hits 3 errors in a row.
 
+### For development: run it in a terminal
+`./start.sh` runs the app in the foreground from this folder, on port 8100, with its own `.env` and
+`data/`. `./start.sh test` runs the tests. Use the installer above for the real, always-on copy.
+
 ### Optional: The Odds API key
 1. Get a free key at https://the-odds-api.com. The free tier is 500 credits a month.
-2. Open `.env` and set `ODDS_API_KEY=your_key`.
-3. Run `./start.sh restart` (or Ctrl+C and `./start.sh` if you didn't install the service). The default pull asks for US and EU books (`us,eu`), which adds
-   Pinnacle. When a sharp book (Pinnacle, Circa, LowVig, BetOnline) is in the pull, its devigged line is the
+2. The installer asks for it. To add it later, set `ODDS_API_KEY` in `~/KalshiEdge/kalshi-edge.env` and
+   run `~/KalshiEdge/kalshi restart`.
+3. The default pull asks for US and EU books (`us,eu`), which adds Pinnacle. When a sharp book (Pinnacle, Circa, LowVig, BetOnline) is in the pull, its devigged line is the
    fair price; otherwise it's the median of all books. Each pull costs 2 credits, and the default 240-minute
    poll uses about 360 credits a month. Use "Run now" on the Audit tab to refresh right before you trade.
 
@@ -184,8 +155,9 @@ Without a key, the fair price falls back in this order:
 
 ### Prove it on live data
 ```
-./start.sh smoke
+~/KalshiEdge/kalshi smoke
 ```
+The installer runs this once on its first install. In a development checkout, use `./start.sh smoke`.
 This runs every data job once against the live public sources and prints a sample report:
 - markets per board;
 - NFL games with Kalshi prices and fair values;
@@ -206,7 +178,7 @@ database instead.
 ```
 ./start.sh test
 ```
-There are 114 tests:
+There are 115 tests:
 - fee math (fee types, event overrides, $0.0001 rounding), devig math, Kelly sizing, tier logic;
 - the maker price on Kalshi's price grid, and sharp-book fair prices;
 - gas ladder calibration, implied median, the trap rule, the model, the no-look-ahead history, and the
@@ -532,7 +504,8 @@ Failing sources show red with the last good time. Prices, headlines, and expert 
 ## Files
 
 ```
-start.sh                 one command: run | test | smoke | install | restart | status | logs | uninstall
+start.sh                 development: run | test | smoke
+mac/setup.sh             the Mac Mini installer and updater (also installs the ~/KalshiEdge/kalshi helper)
 app/main.py              FastAPI app; starts the scheduler
 app/api.py               JSON API used by the dashboard
 app/config.py            .env loading and every editable default (fees, tiers, caps, intervals)
@@ -545,7 +518,7 @@ app/services/            scanner, nfl_service, lines_service, parlay_service, fo
 static/                  index.html, app.js, app.css (compiled Tailwind), vendor/chart.umd.js
 frontend/                Tailwind source and config (only needed if you change the dashboard's classes)
 scripts/smoke_live.py    live-data proof
-scripts/service.sh       background service for macOS (launchd + caffeinate)
+scripts/trader_cli.py    terminal status / paper / stop for the running app
 tests/                   pytest suite
 data/                    your database (git-ignored)
 ```

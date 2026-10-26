@@ -370,3 +370,23 @@ def test_trader_sizes_from_its_own_book_and_caps_each_game(client, world):
     assert s["bankroll"] == manual_bank and s["open_exposure"] == 0 and s["warnings"] == []
     assert portfolio.exposure_by_key() == {}
     assert any(p["source"] == "auto" for p in s["positions"])  # still listed on the Trades tab
+
+
+def test_terminal_status_and_stop(client, world, monkeypatch):
+    from scripts import trader_cli
+    _setup(client)
+
+    def call(method, path, body=None):  # the CLI's HTTP call, routed into the test app
+        r = client.request(method, "/api" + path, json=body)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    monkeypatch.setattr(trader_cli, "call", call)
+    assert trader_cli.main(["x", "paper"]) == 0
+    assert autotrader.status()["mode"] == "paper"
+    run(client, "autotrader")
+    text = trader_cli.status_text(call("GET", "/auto/status"))
+    assert "AI trader: PAPER" in text and "Go-live test: not yet" in text and "14 days of paper trading" in text
+    assert trader_cli.main(["x", "stop"]) == 0
+    assert autotrader.status()["killed"] and _auto(("resting",)) == []
+    assert trader_cli.main(["x", "paper"]) == 0 and autotrader.status()["mode"] == "paper"  # never flips to live

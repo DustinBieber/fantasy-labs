@@ -3,14 +3,10 @@
 #   ./start.sh          install (first run only) and start the dashboard
 #   ./start.sh test     run the test suite
 #   ./start.sh smoke    pull live public data once and print sample output
-#   ./start.sh install  run it in the background on a Mac (starts at login, restarts itself, keeps the Mac awake)
-#   ./start.sh restart | status | logs | uninstall
+# To run it on the Mac Mini for good (background service, updates, phone address), use the installer instead:
+#   bash mac/setup.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-
-case "${1:-}" in
-  install|restart|uninstall|status|logs) exec bash scripts/service.sh "$1" ;;
-esac
 
 if [ ! -f .env ]; then
   cp .env.example .env && chmod 600 .env
@@ -57,7 +53,7 @@ case "${1:-run}" in
   run)
     PORT=$(grep -E '^APP_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)
     HOST=$(grep -E '^APP_HOST=' .env | cut -d= -f2 | tr -d '[:space:]' || true)
-    PORT=${PORT:-8000}
+    PORT=${PORT:-8100}
     HOST=${HOST:-0.0.0.0}
     IP=$( (ipconfig getifaddr en0 || ipconfig getifaddr en1 || hostname -I | awk '{print $1}') 2>/dev/null || true)
     echo ""
@@ -69,6 +65,6 @@ case "${1:-run}" in
     exec .venv/bin/python -m uvicorn app.main:app --host "$HOST" --port "$PORT"
     ;;
   *)
-    echo "Usage: ./start.sh [run|test|smoke|install|restart|status|logs|uninstall]"; exit 1
+    echo "Usage: ./start.sh [run|test|smoke]   (Mac Mini install: bash mac/setup.sh)"; exit 1
     ;;
 esac

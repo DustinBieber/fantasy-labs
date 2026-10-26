@@ -11,7 +11,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
+# The Mac installer keeps settings outside the app folder (~/KalshiEdge/kalshi-edge.env) so updates never touch them.
+load_dotenv(os.getenv("KALSHI_EDGE_ENV_FILE") or ROOT / ".env")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -37,7 +38,8 @@ TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID")
 # Dashboard password (HTTP Basic). Required before the AI trader can go live.
 APP_PASSWORD = _env("APP_PASSWORD")
 APP_HOST = _env("APP_HOST", "0.0.0.0")
-APP_PORT = int(_env("APP_PORT", "8000") or 8000)
+# 8100, not 8000: Family Hub runs on 8000 on the same Mac.
+APP_PORT = int(_env("APP_PORT", "8100") or 8100)
 SCHEDULER_ENABLED = _env("SCHEDULER_ENABLED", "true").lower() in ("1", "true", "yes")
 HTTP_TIMEOUT_S = float(_env("HTTP_TIMEOUT_S", "20") or 20)
 LOCAL_TZ = "Pacific/Honolulu"
