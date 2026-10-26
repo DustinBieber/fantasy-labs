@@ -2,7 +2,8 @@
 # Kalshi Edge — one-command setup for the always-on Mac. Safe to re-run: it also updates an existing install
 # and keeps your settings, data, and the AI trader's record.
 #
-#   bash ~/fantasy-labs/kalshi-edge/mac/setup.sh            (add --smoke to re-check the live data sources)
+#   bash kalshi-edge/mac/setup.sh        (from any download of this repo; add --smoke to re-check data sources)
+#   ~/KalshiEdge/kalshi update           (after the first install: downloads the latest main and runs this)
 #
 # What it does:
 #   1. Gets Python 3.10+ (uses yours, or installs a private copy with `uv`; no admin rights needed)
@@ -63,7 +64,7 @@ echo "Using $PY ($("$PY" --version))"
 # ---------------------------------------------------------------- app + libraries + tests
 say "Installing Kalshi Edge into $HOME_DIR"
 # A copy outside Desktop/Documents/Downloads avoids macOS privacy blocks for background processes, and keeps
-# the running app safe when ~/fantasy-labs is deleted and downloaded again.
+# the running app independent of whatever folder it was installed from.
 rm -rf "$HOME_DIR/app.new" && mkdir -p "$HOME_DIR/app.new"
 cp -R "$SRC_DIR/app" "$SRC_DIR/static" "$SRC_DIR/scripts" "$SRC_DIR/tests" "$SRC_DIR/requirements.txt" "$HOME_DIR/app.new/"
 [ -x "$VPY" ] || "$PY" -m venv "$HOME_DIR/venv"
@@ -125,7 +126,7 @@ py() { (cd "\$H/app" && KALSHI_EDGE_ENV_FILE="\$H/kalshi-edge.env" "\$H/venv/bin
 case "\${1:-}" in
   status)
     launchctl print "\$D/\$L" 2>/dev/null | grep -E "state =|pid =|last exit code" \
-      || echo "Service not loaded. Run: bash ~/fantasy-labs/kalshi-edge/mac/setup.sh"
+      || echo "Service not loaded. Run: ~/KalshiEdge/kalshi update"
     py -m scripts.trader_cli status ;;
   stop) py -m scripts.trader_cli stop ;;
   paper) py -m scripts.trader_cli paper ;;
