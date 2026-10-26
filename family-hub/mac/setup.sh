@@ -1,7 +1,8 @@
 #!/bin/bash
-# Family Hub — one-command setup for an always-on Mac. Safe to re-run: it also updates an existing install.
+# Family Hub — setup for an always-on Mac. Safe to re-run: it also updates an existing install.
+# Usually started by the one-line installer (mac/install.sh), which downloads the code first:
 #
-#   bash family-hub/mac/setup.sh
+#   curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/family-hub/mac/install.sh | bash
 #
 # What it does:
 #   1. Gets Python 3.10+ (uses yours, or installs a private copy with `uv` — no admin rights needed)
@@ -9,7 +10,8 @@
 #   3. Creates ~/FamilyHub/family-hub.env with a fresh encryption key (first run only)
 #   4. Installs a LaunchAgent so the hub starts at login and restarts if it ever crashes
 #   5. If Tailscale is installed, publishes the hub at a free https://<mac>.<tailnet>.ts.net address
-#   6. Optionally stops the Mac from sleeping
+#   6. Turns on nightly automatic updates (com.familyhub.update LaunchAgent)
+#   7. Optionally stops the Mac from sleeping
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,6 +25,12 @@ ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 say()  { printf "\n\033[1;34m==> %s\033[0m\n" "$*"; }
 warn() { printf "\033[1;33m!!  %s\033[0m\n" "$*"; }
 ask()  { local a=""; { read -r -p "$1 [y/N] " a </dev/tty; } 2>/dev/null || true; [ "$a" = "y" ] || [ "$a" = "Y" ]; }
+# Like ask, but Return means yes. With no keyboard (nightly auto-update) it answers no.
+ask_yes() {
+  local a="n"
+  { read -r -p "$1 [Y/n] " a </dev/tty; } 2>/dev/null || return 1
+  [ "$a" != "n" ] && [ "$a" != "N" ]
+}
 set_env() {  # set_env KEY VALUE — replace or append a line in the env file
   local tmp; tmp="$(mktemp)"
   grep -v "^$1=" "$ENV_FILE" > "$tmp" || true
@@ -34,23 +42,28 @@ set_env() {  # set_env KEY VALUE — replace or append a line in the env file
 mkdir -p "$DATA_DIR/logs" "$DATA_DIR/backups"
 
 # ---------------------------------------------------------------- Python
-say "Finding Python 3.10 or newer"
-PY=""
-for c in python3.13 python3.12 python3.11 python3.10 python3; do
-  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-    PY="$(command -v "$c")"; break
+if [ -x "$DATA_DIR/venv/bin/python" ]; then
+  echo "Using existing Python environment in $DATA_DIR/venv"
+else
+  say "Finding Python 3.10 or newer"
+  PY=""
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+  for c in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+      PY="$(command -v "$c")"; break
+    fi
+  done
+  if [ -z "$PY" ]; then
+    echo "macOS's built-in Python is too old; installing a private Python 3.12 with uv (free, no admin rights)."
+    if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
+    UV="$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")"
+    "$UV" python install 3.12
+    PY="$("$UV" python find 3.12)"
   fi
-done
-if [ -z "$PY" ]; then
-  echo "macOS's built-in Python is too old; installing a private Python 3.12 with uv (free, no admin rights)."
-  if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-  fi
-  UV="$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")"
-  "$UV" python install 3.12
-  PY="$("$UV" python find 3.12)"
+  echo "Using $PY ($("$PY" --version))"
 fi
-echo "Using $PY ($("$PY" --version))"
 
 # ---------------------------------------------------------------- app + libraries
 say "Installing Family Hub into $DATA_DIR"
@@ -146,17 +159,57 @@ if [ -n "$TS" ]; then
     set_env FAMILY_HUB_BASE_URL "$URL"
     restart_service >/dev/null && echo "Family Hub is live at: $URL"
   else
-    warn "Tailscale Funnel didn't start. Re-run this script after enabling Funnel."
+    warn "Tailscale Funnel didn't start. Enable it with the link above, then run the install command again."
   fi
 else
   cat <<TXT
 Phones need an https:// address to install the app, get notifications and share location.
 Free option (nothing to install on the phones):
   1. Install Tailscale on this Mac: https://tailscale.com/download/mac  (free Personal plan) and sign in.
-  2. Re-run:  bash "$SRC_DIR/mac/setup.sh"
+  2. Run the install command again:
+     curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/family-hub/mac/install.sh | bash
      It turns on Tailscale Funnel and prints your permanent https://<mac>.<tailnet>.ts.net address.
 TXT
 fi
+
+# ---------------------------------------------------------------- automatic updates
+UPDATE_LABEL="com.familyhub.update"
+UPDATE_PLIST="$HOME/Library/LaunchAgents/$UPDATE_LABEL.plist"
+cp "$SRC_DIR/mac/install.sh" "$DATA_DIR/install.sh"
+write_update_plist() {
+  cat > "$UPDATE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$UPDATE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>$DATA_DIR/install.sh</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>$DATA_DIR/logs/update.log</string>
+  <key>StandardErrorPath</key><string>$DATA_DIR/logs/update.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FAMILY_HUB_UPDATE</key><string>1</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$UPDATE_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
+}
+say "Automatic updates"
+if [ -f "$UPDATE_PLIST" ]; then
+  write_update_plist
+  echo "On: checks GitHub every night at 3:30 and updates itself if there's something new."
+elif ask_yes "Update Family Hub automatically every night (3:30 AM)?"; then
+  write_update_plist
+  echo "On. Update log: $DATA_DIR/logs/update.log"
+else
+  echo "Off. To update later, run the one-line install command again."
+fi
+[ -n "${FAMILY_HUB_VERSION:-}" ] && echo "$FAMILY_HUB_VERSION" > "$DATA_DIR/version"
 
 # ---------------------------------------------------------------- stay awake
 say "Keeping the Mac awake"
@@ -176,5 +229,6 @@ Done. Next steps:
   • The first time the hub sends an iMessage, runs a Shortcut, or scans your Wi-Fi, macOS shows a
     permission prompt on this Mac's screen. Click Allow / OK.
   • Then open Connections (🔌) in the app: it lists every service with its setup steps.
-  • Logs: $DATA_DIR/logs/server.log   Backups: $DATA_DIR/backups   Update: re-run this script.
+  • Logs: $DATA_DIR/logs/server.log   Backups: $DATA_DIR/backups
+  • Update by hand any time:  curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/family-hub/mac/install.sh | bash
 TXT

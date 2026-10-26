@@ -51,27 +51,22 @@ for free without buying a domain. The phones themselves only need Safari or Chro
 
 ## Set up on your Mac mini (about 20 minutes)
 
-1. **Get the code onto the Mac.** In Terminal:
-   ```bash
-   cd ~ && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip
-   ```
-   No browser or GitHub sign-in needed. If `fantasy-labs` already exists, run `rm -rf ~/fantasy-labs` first
-   (your data lives in `~/FamilyHub`).
-2. **Install Tailscale** from [tailscale.com/download/mac](https://tailscale.com/download/mac) and sign in.
+1. **Install Tailscale** from [tailscale.com/download/mac](https://tailscale.com/download/mac) and sign in.
    The Personal plan is free.
-3. **Run the installer:**
+2. **Run the one-line installer** in Terminal:
    ```bash
-   bash ~/fantasy-labs/family-hub/mac/setup.sh
+   curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/family-hub/mac/install.sh | bash
    ```
-   It installs Python if needed, copies the app to `~/FamilyHub`, and sets it to start automatically and
-   restart if it crashes. It turns on Tailscale Funnel (open the link it prints if Funnel needs enabling),
-   offers to turn off sleep, and prints your address, such as `https://mac-mini.tail1234.ts.net`.
-4. **Keep the Mac logged in.** Go to System Settings → Users & Groups → *Automatically log in as…*. This needs
+   It downloads the code to `~/fantasy-labs`, installs Python if needed, and sets the hub to start automatically and
+   restart if it crashes. It turns on Tailscale Funnel (open the link it prints if Funnel needs enabling), turns on
+   **nightly automatic updates**, offers to turn off sleep, and prints your address, such as
+   `https://mac-mini.tail1234.ts.net`.
+3. **Keep the Mac logged in.** Go to System Settings → Users & Groups → *Automatically log in as…*. This needs
    FileVault off. If you keep FileVault on, log in once after every restart. The hub runs in your user
    session so it can use Messages and Shortcuts.
-5. **Open your address**, choose **New family**, and add the kids (each gets a PIN) in **Settings**.
+4. **Open your address**, choose **New family**, and add the kids (each gets a PIN) in **Settings**.
 
-To update later, run `rm -rf ~/fantasy-labs`, repeat step 1, and run `setup.sh` again (see SETUP.md → *Day to day*).
+Updates install themselves every night at 3:30 AM. To update right away, run the install command again.
 To uninstall, run `mac/uninstall.sh`; your data in `~/FamilyHub` is kept.
 Logs are in `~/FamilyHub/logs/server.log`. Daily database backups go to `~/FamilyHub/backups` (the last 14 are kept).
 
