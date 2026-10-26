@@ -52,7 +52,7 @@ case "${1:-run}" in
     exec .venv/bin/python -m pytest -q
     ;;
   smoke)
-    exec .venv/bin/python -m scripts.smoke_live "${@:2}"
+    exec .venv/bin/python -m scripts.smoke_live ${2+"${@:2}"}
     ;;
   run)
     PORT=$(grep -E '^APP_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)

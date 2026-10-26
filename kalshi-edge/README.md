@@ -38,9 +38,17 @@ nothing except a browser bookmark, plus Tailscale and Telegram on the phone.
    ```
    Follow the "Next steps" lines Homebrew prints at the end; they add `brew` to your PATH.
 4. **Put the app in your home folder.** Don't use Desktop, Documents, or Downloads, because macOS blocks
-   background apps from those folders. If you have the zip in Downloads:
+   background apps from those folders. If `kalshi-edge.zip` is in Downloads:
    ```
    cd ~ && unzip ~/Downloads/kalshi-edge.zip && cd ~/kalshi-edge
+   ```
+   If Safari already unzipped it into a `kalshi-edge` folder in Downloads, run this instead:
+   ```
+   mv ~/Downloads/kalshi-edge ~/kalshi-edge && cd ~/kalshi-edge
+   ```
+   Then clear the "downloaded from the internet" flag, so macOS doesn't stop the scripts:
+   ```
+   xattr -dr com.apple.quarantine ~/kalshi-edge
    ```
    If you use git instead: `git clone <your repo> ~/fantasy-labs && cd ~/fantasy-labs/kalshi-edge`.
 5. **Install and test:**
