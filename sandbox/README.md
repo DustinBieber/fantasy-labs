@@ -29,7 +29,7 @@ On the Mac mini, paste this into Terminal (device-by-device steps are in [`SETUP
 ```
 
 The installer sets up native mode, which runs under launchd with Apple's hardware encoder and MLX Whisper. It also turns on
-hourly self-updates and starts the first pass. To set things up by hand, clone the repo to `~/fantasy-labs` and run
+hourly self-updates and starts the first pass. To set things up by hand, clone the repo to `~/sandbox-data/repo` and run
 `sandbox/sandbox.sh setup native`, or `sandbox.sh setup` for the Docker sandbox.
 
 **Docker mode** needs a Docker runtime: Docker Desktop (free for personal use and small businesses) or colima (free, open source).
@@ -67,16 +67,17 @@ The dashboard only listens on the Mac mini itself (`127.0.0.1:8787`). To reach i
 [Tailscale](https://tailscale.com) (free plan) on the Mac mini and your phone, then on the Mac mini:
 
 ```bash
-tailscale serve --bg 8787               # private: https://<mac-mini>.<tailnet>.ts.net, only your devices can open it
+tailscale serve --bg --https=8443 8787  # private: https://<mac-mini>.<tailnet>.ts.net:8443, only your devices
 ```
 
-Log in with `admin` and the `DASHBOARD_PASSWORD` from `.env`.
+Log in with `admin` and the `DASHBOARD_PASSWORD` from `.env`. Port 8443 keeps the clipper apart from Family Hub and
+Ops Hub, which use the plain `ts.net` address.
 
 When you're ready for a creator to connect accounts, they need to reach the connect page, and the platforms need a public
 HTTPS address for the OAuth redirect. Switch the same port to Funnel (also free):
 
 ```bash
-tailscale funnel --bg 8787              # public: same https://<mac-mini>.<tailnet>.ts.net address
+tailscale funnel --bg --https=8443 8787 # public: the same :8443 address
 ```
 
 Put that URL in `.env` as `PUBLIC_BASE_URL=` and run `./sandbox.sh restart`. Funnel makes the dashboard reachable from the

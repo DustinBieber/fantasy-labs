@@ -74,7 +74,7 @@ discovery:
   min_score: 60
 
 publish:
-  public_base_url: ""               # e.g. https://mac-mini.your-tailnet.ts.net (needed for creators to connect accounts)
+  public_base_url: ""               # e.g. https://mac-mini.your-tailnet.ts.net:8443 (needed for creators to connect accounts)
   retry_limit: 3
   tiktok_mode: direct               # direct = post; inbox = send to the creator's TikTok drafts
   instagram_upload: resumable       # resumable = upload bytes; url = Instagram fetches from public_base_url

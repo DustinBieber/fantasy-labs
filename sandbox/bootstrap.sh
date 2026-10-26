@@ -7,9 +7,12 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/DustinBieber/fantasy-labs.git"
-DIR="${FANTASY_LABS_DIR:-$HOME/fantasy-labs}"
+ROOT="${SANDBOX_DATA:-$HOME/sandbox-data}"
+# The sandbox keeps its own clone. ~/fantasy-labs belongs to the Family Hub installer, which replaces it nightly.
+DIR="${FANTASY_LABS_DIR:-$ROOT/repo}"
 BRANCH="${FANTASY_LABS_BRANCH:-main}"
-DATA="${SANDBOX_DATA:-$HOME/sandbox-data}/clipper"
+DATA="$ROOT/clipper"
+TS_PORT=8443          # Tailscale HTTPS port for the dashboard; Family Hub / Ops Hub use the default 443
 TS_APP="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
 say()  { printf '\n\033[1;33m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
@@ -55,6 +58,7 @@ if [ -d "$DIR/.git" ]; then
   git -C "$DIR" merge -q --ff-only "origin/$BRANCH"
 else
   say "2/6 Downloading the code to $DIR"
+  mkdir -p "$(dirname "$DIR")"
   git clone -q -b "$BRANCH" "$REPO_URL" "$DIR"
 fi
 
@@ -88,20 +92,24 @@ fi
 # 5. Keep itself up to date from GitHub
 say "5/6 Automation"
 "$DIR/sandbox/sandbox.sh" autoupdate on
+if ! grep -q "alias sandbox=" "$HOME/.zshrc" 2>/dev/null; then
+  echo "alias sandbox='$DIR/sandbox/sandbox.sh'" >> "$HOME/.zshrc"
+  echo "Added the 'sandbox' command for new Terminal windows (sandbox status, sandbox logs, ...)."
+fi
 
 # 6. Phone access through Tailscale, then kick off the first clipping pass
 say "6/6 Phone access"
 DASH="http://localhost:8787"
 if [ -x "$TS_APP" ] && "$TS_APP" status >/dev/null 2>&1; then
-  if "$TS_APP" serve --bg 8787; then
+  if "$TS_APP" serve --bg --https="$TS_PORT" 8787; then
     host="$("$TS_APP" status --json 2>/dev/null | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
-    if [ -n "$host" ]; then DASH="https://$host"; fi
+    if [ -n "$host" ]; then DASH="https://$host:$TS_PORT"; fi
   else
-    warn "tailscale serve failed. If it printed a link to enable HTTPS, open it, then run: $TS_APP serve --bg 8787"
+    warn "tailscale serve failed. If it printed a link to enable HTTPS, open it, then run: $TS_APP serve --bg --https=$TS_PORT 8787"
   fi
 else
   echo "Tailscale isn't set up on this Mac yet. Install it (opening the download page), sign in, then run:"
-  echo "  $TS_APP serve --bg 8787"
+  echo "  $TS_APP serve --bg --https=$TS_PORT 8787"
   open "https://tailscale.com/download/mac" || true
 fi
 
@@ -121,6 +129,6 @@ $(printf '\033[1;32m')All set. The clipper is running and its first pass has sta
   - On your S24: install Tailscale from the Play Store (same account), open the dashboard address in Chrome,
     then use the menu and tap "Add to Home screen".
   - It runs 8am-5pm HST on weekdays, updates itself from GitHub hourly, and restarts after reboots.
-  - Logs: $DIR/sandbox/sandbox.sh logs
+  - In a new Terminal window: sandbox status | sandbox logs | sandbox run-now
 EOF
 open "http://localhost:8787" >/dev/null 2>&1 || true
