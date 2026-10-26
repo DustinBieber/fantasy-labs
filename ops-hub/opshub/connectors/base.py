@@ -79,6 +79,10 @@ class NOrder:
     ship_from: str | None = None  # location ref (see SyncBatch)
     order_type: str | None = None  # when the source knows (e.g. wholesale)
     shipped_at: datetime | None = None
+    picked_at: datetime | None = None
+    packed_at: datetime | None = None
+    delivered_at: datetime | None = None
+    handled_by: str | None = None
 
 
 @dataclass
@@ -108,6 +112,7 @@ class NSale:
     sold_at: datetime
     qty: int
     net_amount: Decimal | None = None
+    employee: str | None = None
 
 
 @dataclass
@@ -230,6 +235,38 @@ class NDocument:
 
 
 @dataclass
+class NReceiptLine:
+    sku: str
+    expected: int = 0
+    received: int = 0
+
+
+@dataclass
+class NReceipt:
+    external_id: str
+    status: str  # expected | receiving | received | cancelled
+    kind: str = "receipt"
+    reference: str | None = None
+    vendor: str | None = None
+    location: str | None = None
+    expected_at: datetime | None = None
+    arrived_at: datetime | None = None
+    received_at: datetime | None = None
+    pallets: int | None = None
+    lines: list[NReceiptLine] = field(default_factory=list)
+    notes: str | None = None
+
+
+@dataclass
+class NLabor:
+    external_id: str
+    employee: str
+    clock_in: datetime
+    clock_out: datetime | None = None
+    location: str | None = None
+
+
+@dataclass
 class SyncBatch:
     """Everything one pull returned.
 
@@ -253,14 +290,18 @@ class SyncBatch:
     carriers: list[NCarrier] = field(default_factory=list)
     standing_orders: list[NStandingOrder] = field(default_factory=list)
     documents: list[NDocument] = field(default_factory=list)
+    receipts: list[NReceipt] = field(default_factory=list)
+    labor: list[NLabor] = field(default_factory=list)
     # When true, lots for (sku, location) pairs in this batch replace what is stored.
     lots_complete: bool = True
+    # Optional pulls that failed without stopping the rest (e.g. a scope the API user lacks).
+    warnings: list[str] = field(default_factory=list)
 
 
 # --- connector base classes --------------------------------------------------------
 
 CAPABILITIES = ("orders", "inventory", "lots", "sales", "shipments", "billing", "master_data",
-                "documents", "notify", "calendar", "export", "ai")
+                "documents", "notify", "calendar", "export", "ai", "inbound", "outbound", "labor")
 
 
 class Connector:

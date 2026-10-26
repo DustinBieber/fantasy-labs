@@ -1,6 +1,8 @@
 """Named jobs (run on a schedule or on demand) and the background scheduler.
 
-Interval: sync every SYNC_INTERVAL_MINUTES, then publish the calendar and the Sheets report.
+Interval: each connector syncs on its own interval (SYNC_INTERVALS, e.g. Shopify, Extensiv and Gmail every
+5 minutes; others every SYNC_INTERVAL_MINUTES), then rules and alerts run; the calendar and the Sheets
+report are republished at most every REPORTS_INTERVAL_MINUTES.
 Daily (business timezone): Muse export at MUSE_EXPORT_TIME, digest at DIGEST_TIME, database
 backup at BACKUP_TIME.
 Every tick (~20 s): answer Telegram messages.
@@ -16,11 +18,12 @@ from sqlalchemy.orm import Session
 
 from .. import db
 from ..config import Settings, get_settings
-from ..connectors import get_connector
+from ..connectors import get_connector, sync_keys
 from ..timeutil import iso, parse_iso, to_local, utcnow
-from . import calendar, chatops, inventory, kv, muse, notify, sync
+from . import calendar, chatops, inventory, kv, muse, notify, sync, trackers
 
 log = logging.getLogger(__name__)
+SLACK = timedelta(seconds=30)  # ticks are ~20 s apart; don't let a 5-minute sync slip to 5m20s
 
 
 def send_digest(session: Session, s: Settings, env=None) -> dict:
@@ -57,6 +60,9 @@ def report_tables(session: Session, s: Settings) -> dict[str, list[list]]:
     lots = inventory.lots(session, now, s.sell_through_days, s.lot_policy)
     alerts = list(session.scalars(select(Alert).where(Alert.status.in_(("open", "acked")))))
     stamp = f"Updated {to_local(now, s.timezone):%Y-%m-%d %H:%M} ({s.timezone})"
+    inb = trackers.inbound(session, s, now, 30)
+    out = trackers.outbound(session, s, now, 30)
+    prod = trackers.productivity(session, s, now, 30)
     return {
         "Watchlist": [[stamp], ["Order", "Customer", "Status", "Type", "Needed by", "Flags", "Notes"]] + [
             [o["number"], o["customer"], o["status"], o["order_type"], (o["required_by"] or "")[:16],
@@ -74,6 +80,28 @@ def report_tables(session: Session, s: Settings) -> dict[str, list[list]]:
              l["at_risk_units"]] for l in lots],
         "Alerts": [[stamp], ["Severity", "Title", "Detail", "Status"]] + [
             [a.severity, a.title, a.detail, a.status] for a in sorted(alerts, key=lambda a: a.severity)],
+        "Inbound": [[stamp], ["Status", "Reference", "Kind", "Source", "Vendor / carrier", "Location", "Expected",
+                              "Arrived", "Received", "Units expected", "Units received", "Pallets", "Days late"]] + [
+            [r["status"], r["reference"], r["kind"], r["source"], r["vendor"], r["location"], (r["expected_at"] or "")[:10],
+             (r["arrived_at"] or "")[:16], (r["received_at"] or "")[:16], r["units_expected"], r["units_received"],
+             r["pallets"], r["days_late"]] for r in inb["open"] + inb["received"]],
+        "Outbound": [[stamp], ["Date", "Placed", "Shipped", "Delivered"]] + [
+            [d["date"], d["placed"], d["shipped"], d["delivered"]] for d in out["series"]] + [
+            [], ["Ships from", "Shipped (30d)", "Units", "Order-to-ship h (median)", "Within 48h %"]] + [
+            [o["origin"], o["shipped"], o["units"], o["order_to_ship_hours"], o["within_48h_pct"]] for o in out["by_origin"]] + [
+            [], ["Backlog order", "Customer", "Ships from", "Status", "Age h", "Needed by"]] + [
+            [b["number"], b["customer"], b["origin"], b["status"], b["age_hours"], (b["required_by"] or "")[:16]]
+            for b in out["backlog"]],
+        "Productivity": [[stamp], ["Warehouse handler", "Orders (30d)", "Units", "Days active", "Orders/day",
+                                   "Pick-to-ship h"]] + [
+            [h["name"], h["orders"], h["units"], h["days_active"], h["orders_per_day"], h["pick_to_ship_hours"]]
+            for h in prod["handlers"]] + [
+            [], ["Employee", "Location", "Sales $", "Units", "Hours", "Sales $/hour", "Units/hour"]] + [
+            [p["name"], p["location"], p["revenue"], p["units"], p["hours"], p["revenue_per_hour"], p["units_per_hour"]]
+            for p in prod["people"]] + [
+            [], ["Store", "Sales $", "Units", "Labor hours", "Sales $/labor hour", "Staff"]] + [
+            [x["location"], x["revenue"], x["units"], x["labor_hours"], x["revenue_per_labor_hour"], x["staff"]]
+            for x in prod["stores"]],
     }
 
 
@@ -93,10 +121,15 @@ def telegram_poll(session: Session, s: Settings, env=None) -> dict:
 
 
 def backup(session: Session, s: Settings, env=None) -> dict:
+    from sqlalchemy import delete
+
+    from ..models import SyncRun
     from .backup import backup as run_backup
 
+    # Fast polling writes a few hundred sync records a day; keep 30 days of them.
+    pruned = session.execute(delete(SyncRun).where(SyncRun.started_at < utcnow() - timedelta(days=30))).rowcount
     session.commit()  # the copy should include everything written so far
-    return run_backup()
+    return {**run_backup(), "sync_runs_pruned": pruned}
 
 
 JOBS = {"digest": send_digest, "muse_export": muse_export, "calendar": publish_calendar, "sheets_report": export_sheets,
@@ -129,18 +162,27 @@ class Scheduler:
         with db.session_scope() as session:
             if get_connector("telegram", self.env).is_configured():
                 self._safe(session, "telegram_poll", s, ran)
-            last = parse_iso(kv.get("scheduler:last_sync", session=session))
-            if s.sync_interval_minutes > 0 and (last is None or now - last >= timedelta(minutes=s.sync_interval_minutes)):
+            due = self.due_connectors(session, s, now)
+            if due:
                 try:
-                    sync.sync_all(session, s, self.env)
+                    with sync.SYNC_LOCK:
+                        for key in due:
+                            sync.run_connector(session, key, s, self.env)
+                        sync.run_rules(session, s, self.env)
                     ran.append("sync")
                 except Exception:
                     log.exception("Scheduled sync failed")
                     session.rollback()
+                for key in due:
+                    kv.set(f"scheduler:last_sync:{key}", iso(now), session=session)
                 kv.set("scheduler:last_sync", iso(now), session=session)
                 session.commit()
-                for name in ("calendar", "sheets_report"):
-                    self._safe(session, name, s, ran)
+                last_reports = parse_iso(kv.get("scheduler:last_reports", session=session))
+                if last_reports is None or now - last_reports >= timedelta(minutes=s.reports_interval_minutes) - SLACK:
+                    for name in ("calendar", "sheets_report"):
+                        self._safe(session, name, s, ran)
+                    kv.set("scheduler:last_reports", iso(now), session=session)
+                    session.commit()
             local = to_local(now, s.timezone)
             for name, at in (("muse_export", s.muse_export_time), ("digest", s.digest_time), ("backup", s.backup_time)):
                 key = f"scheduler:daily:{name}"
@@ -149,6 +191,20 @@ class Scheduler:
                     kv.set(key, local.date().isoformat(), session=session)
                     session.commit()
         return ran
+
+    def due_connectors(self, session: Session, s: Settings, now: datetime) -> list[str]:
+        """Connectors whose interval has passed, in sync order (master data first)."""
+        if s.sync_interval_minutes <= 0:
+            return []
+        due = []
+        for key in sync_keys():
+            minutes = s.interval_for(key)
+            if minutes <= 0 or get_connector(key, self.env).mode(s.demo_mode) in ("disabled", "planned"):
+                continue
+            last = parse_iso(kv.get(f"scheduler:last_sync:{key}", session=session))
+            if last is None or now - last >= timedelta(minutes=minutes) - SLACK:
+                due.append(key)
+        return due
 
     def _safe(self, session: Session, name: str, s: Settings, ran: list[str]) -> None:
         try:

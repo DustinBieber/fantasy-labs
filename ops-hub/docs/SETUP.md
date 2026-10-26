@@ -89,7 +89,8 @@ SHOPIFY_SALES_LOCATION_ID=gid://shopify/Location/...   # where online sales draw
 ```
 
 Deadlines are picked up from order note attributes named like *Need By, Delivery Date, Ship By*,
-from tags like `need-by:2026-11-03`, and from the order note itself.
+from tags like `need-by:2026-11-03`, and from the order note itself. Fulfillment times and carrier
+delivery scans feed the Outbound tracker (order-to-ship and ship-to-delivery).
 
 ## 3. Lightspeed Retail (R-Series)
 
@@ -100,6 +101,10 @@ from tags like `need-by:2026-11-03`, and from the order note itself.
    prints your account id for `LIGHTSPEED_ACCOUNT_ID`.
 3. SKUs are matched on `customSku`. Set `LIGHTSPEED_SKU_FIELD=systemSku` or `manufacturerSku` if your
    SKUs live elsewhere.
+4. Besides items and sales, each sync reads employees, time-clock hours (`EmployeeHours`) and purchase
+   orders (`Order` with lines). They feed the Productivity tracker (sales per employee and per labor
+   hour) and the Inbound tracker (POs due, late, short-received). The default `employee:all` scope covers
+   them. Staff must clock in and out in Lightspeed for hours to count.
 
 ## 4. Extensiv (partner warehouse)
 
@@ -122,6 +127,11 @@ Billable activity (for the invoice audit) is derived as follows:
 * `RCV-PLT` for each pallet received
 * `STOR-PLT` for pallets in storage at month end
 * `HAZ-HNDL` for each order containing a hazmat SKU
+
+Each sync also reads the 3PL's **receivers** (`/inventory/receivers`: ASNs and completed receipts) for
+the Inbound tracker, and each order's pick, pack and ship times and the last user to touch it for the
+Outbound and Productivity trackers. If the 3PL's API user can't read receivers, orders and stock still
+sync and the Connectors tab says receivers were skipped. Ask them to allow it.
 
 If your rate card uses other codes, map them, e.g.
 `EXTENSIV_ACTIVITY_CODES={"order": "PP-ORDER", "storage_pallet": ""}` (empty turns one off).

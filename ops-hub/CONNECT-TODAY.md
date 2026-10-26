@@ -9,7 +9,7 @@ without duplicates.
 
 | Do now | Why first |
 | --- | --- |
-| Email the partner warehouse: *"Please set up Extensiv REST API access for our customer account: client ID, client secret, user login ID, our customer ID, facility ID, and the TPL key if you use one."* | They have to do it. Until then, export orders and stock-by-lot reports from their portal into **Ops Hub/Imports/Extensiv exports**. |
+| Email the partner warehouse: *"Please set up Extensiv REST API access for our customer account: client ID, client secret, user login ID, our customer ID, facility ID, and the TPL key if you use one. We need read access to orders, receivers and stock details."* | They have to do it. Until then, export orders and stock-by-lot reports from their portal into **Ops Hub/Imports/Extensiv exports**. |
 | Meta Business Manager → WhatsApp → Message templates: create `ops_alert` (Utility), body `Ops Hub: {{1}}` | Approval takes minutes to hours. |
 | Telegram: message **@BotFather**, send `/newbot` | Token in 1 minute. |
 
@@ -52,6 +52,8 @@ without duplicates.
      `/start`, and click **Find chats** → **Use for alerts**.
    * WhatsApp: paste the token, phone number ID, staff numbers and template name.
 9. **AI (2 min).** Paste a Claude, Gemini or ChatGPT key.
+   For Muse, ChatGPT or Gemini to read Ops Hub directly, click **Create a new key** under
+   *Read-only API key* and give them the key with the URL (README, *Polling and API access*).
 10. **Sync all** on the top bar. The Connectors tab shows each system as *Live*,
     *Live: export files* or *Sample data*. Once everything is live, set `DEMO_MODE=false` in `.env`
     so nothing falls back to sample data.

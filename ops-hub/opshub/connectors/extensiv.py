@@ -7,6 +7,10 @@ The API returns PascalCase JSON (``ReadOnly``, ``ResourceList``, ``OnHandQty``);
 camel-cased on arrival so one mapping handles them. Stock and lots come from
 /inventory/stockdetails, orders from /orders.
 
+Receivers (inbound receipts and ASNs) come from /inventory/receivers. Orders carry the
+warehouse's pick, pack and ship times and who last touched them, for the outbound and
+productivity trackers.
+
 Billable activity has no customer-side endpoint, so it is derived from what the WMS shows:
 one row per shipped order and its extra units, receipt pallets per receiver, and the
 count of pallets in storage for the month. EXTENSIV_ACTIVITY_CODES maps these to your
@@ -24,10 +28,12 @@ from decimal import Decimal
 from ..demo import fixtures
 from ..timeutil import parse_date, parse_iso, utcnow
 from ._util import to_dec, to_int
-from .base import Connector, NActivity, NLot, NOrder, NOrderLine, NShipment, NStock, SyncBatch, register
+from .base import (Connector, NActivity, NLot, NOrder, NOrderLine, NReceipt, NReceiptLine, NShipment, NStock, SyncBatch,
+                   register)
 from .files import FileImports
 
 ITEMS_REL = "http://api.3plCentral.com/rels/orders/item"
+RECEIVE_ITEMS_REL = "http://api.3plCentral.com/rels/inventory/receiveitem"
 DEFAULT_CODES = {"order": "PICK-ORD", "extra_unit": "PICK-UNIT", "receipt_pallet": "RCV-PLT",
                  "storage_pallet": "STOR-PLT", "hazmat_order": "HAZ-HNDL"}
 
@@ -51,14 +57,14 @@ class ExtensivConnector(FileImports, Connector):
     key = "extensiv"
     name = "Extensiv 3PL Warehouse Manager"
     category = "warehouse"
-    capabilities = ("orders", "inventory", "lots", "shipments", "billing")
+    capabilities = ("orders", "inventory", "lots", "shipments", "billing", "inbound", "outbound")
     settings_keys = ("EXTENSIV_CLIENT_ID", "EXTENSIV_CLIENT_SECRET", "EXTENSIV_USER_LOGIN_ID", "EXTENSIV_CUSTOMER_ID",
                      "EXTENSIV_FACILITY_ID")
     import_folder_key = "EXTENSIV_IMPORT_FOLDER_ID"
     import_query_key = "EXTENSIV_IMPORT_GMAIL_QUERY"
     docs_url = "https://developer.extensiv.com/"
-    status_note = ("Live client built (orders, stock details with lots/best-by, derived billable activity). "
-                   "Needs API credentials issued by the 3PL; verify on first run.")
+    status_note = ("Live client built (orders with pick/pack/ship times, receivers, stock details with lots/best-by, "
+                   "derived billable activity). Needs API credentials issued by the 3PL; verify on first run.")
 
     @property
     def vendor(self) -> str:
@@ -122,10 +128,17 @@ class ExtensivConnector(FileImports, Connector):
         since = since or utcnow() - timedelta(days=int(self.setting("EXTENSIV_BACKFILL_DAYS", "60")))
         customer = str(self.setting("EXTENSIV_CUSTOMER_ID"))
         facilities = [f.strip() for f in self.setting("EXTENSIV_FACILITY_ID", "").split(",") if f.strip()]
+        changed = f"ReadOnly.lastModifiedDate=ge={since.replace(microsecond=0).isoformat()}"
+        warnings = []
         with self.http() as client:
             orders = self._pages(client, "orders", {
-                "detail": "All", "itemdetail": "All", "sort": "ReadOnly.lastModifiedDate",
-                "rql": f"ReadOnly.lastModifiedDate=ge={since.replace(microsecond=0).isoformat()}"})
+                "detail": "All", "itemdetail": "All", "sort": "ReadOnly.lastModifiedDate", "rql": changed})
+            try:
+                receivers = self._pages(client, "inventory/receivers", {
+                    "detail": "All", "itemdetail": "All", "sort": "ReadOnly.lastModifiedDate",
+                    "rql": changed})
+            except Exception as exc:  # orders and stock still sync if this login can't read receivers
+                receivers, warnings = [], [f"receivers: {exc}"[:300]]
             lots = []
             for fac in facilities:
                 for row in self._pages(client, "inventory/stockdetails", {
@@ -133,13 +146,15 @@ class ExtensivConnector(FileImports, Connector):
                     row.setdefault("facilityIdentifier", {"id": fac})
                     lots.append(row)
         # A warehouse-level login can see other customers' orders; keep ours.
-        orders = [o for o in orders if str(((o.get("readOnly") or {}).get("customerIdentifier") or {}).get("id")
-                                           or customer) == customer]
-        batch = self.normalize(orders=orders, summaries=None, lots=lots, activity=[])
-        batch.activities = self.derive_activity(orders, lots, utcnow().date())
+        ours = lambda r: str(((r.get("readOnly") or {}).get("customerIdentifier") or {}).get("id") or customer) == customer  # noqa: E731
+        orders, receivers = [o for o in orders if ours(o)], [r for r in receivers if ours(r)]
+        batch = self.normalize(orders=orders, summaries=None, lots=lots, activity=[], receivers=receivers)
+        batch.activities = self.derive_activity(orders, lots, utcnow().date(), receivers)
+        batch.warnings = warnings
         return batch
 
-    def derive_activity(self, orders: list[dict], lots: list[dict], today: date) -> list[NActivity]:
+    def derive_activity(self, orders: list[dict], lots: list[dict], today: date,
+                        receivers: list[dict] | None = None) -> list[NActivity]:
         codes, out = self.codes, []
         for o in orders:
             ro = o.get("readOnly") or {}
@@ -164,6 +179,12 @@ class ExtensivConnector(FileImports, Connector):
                     pals.add(pallet)
             if pallet and to_int(lot.get("onHandQty", lot.get("onHand"))) > 0:
                 pallets_now.add(pallet)
+        for rc in receivers or []:  # receivers list their own pallets; prefer them to the stock-detail view
+            ro = rc.get("readOnly") or {}
+            pals = {(i.get("palletIdentifier") or {}).get("id") for i in self._receive_items(rc)} - {None}
+            received = parse_date(rc.get("arrivalDate") or ro.get("processDate"))
+            if ro.get("status") == 1 and pals and received:
+                receipts[str(ro.get("receiverId"))] = (received, pals)
         if codes.get("receipt_pallet"):
             for receiver, (d, pals) in receipts.items():
                 if pals:
@@ -183,6 +204,7 @@ class ExtensivConnector(FileImports, Connector):
             summaries=fixtures.extensiv_stock_summaries(now),
             lots=fixtures.extensiv_lots(now),
             activity=fixtures.extensiv_billing_activity(now),
+            receivers=fixtures.extensiv_receivers(now),
         )
 
     @staticmethod
@@ -190,10 +212,43 @@ class ExtensivConnector(FileImports, Connector):
         emb = o.get("_embedded") or {}
         return o.get("orderItems") or emb.get(ITEMS_REL) or emb.get("item") or []
 
+    @staticmethod
+    def _receive_items(r: dict) -> list[dict]:
+        emb = r.get("_embedded") or {}
+        return r.get("receiveItems") or emb.get(RECEIVE_ITEMS_REL) or emb.get("item") or []
+
     def normalize(self, orders: list[dict], summaries: list[dict] | None, lots: list[dict],
-                  activity: list[dict]) -> SyncBatch:
+                  activity: list[dict], receivers: list[dict] | None = None) -> SyncBatch:
         orders, lots = camel_keys(orders), camel_keys(lots)
         batch = SyncBatch()
+        now = utcnow()
+        for r in camel_keys(receivers or []):
+            ro = r.get("readOnly") or {}
+            arrived = parse_iso(r.get("arrivalDate"))
+            raw = ro.get("status")
+            status = ({1: "received", 2: "cancelled"}.get(raw)
+                      or ("receiving" if arrived and arrived <= now else "expected"))
+            items = self._receive_items(r)
+            done = status == "received"
+            lines: dict[str, NReceiptLine] = {}
+            for i in items:
+                sku = (i.get("itemIdentifier") or {}).get("sku")
+                if not sku:
+                    continue
+                qty = to_int(i.get("qty"))
+                ln = lines.setdefault(sku, NReceiptLine(sku=sku))
+                ln.expected += to_int(i.get("expectedQty", qty))
+                ln.received += qty if done else to_int(i.get("receivedQty", 0))
+            pallets = {(i.get("palletIdentifier") or {}).get("id") for i in items} - {None}
+            fac = str((ro.get("facilityIdentifier") or {}).get("id") or "")
+            batch.receipts.append(NReceipt(
+                external_id=str(ro.get("receiverId")), status=status, kind="receipt",
+                reference=r.get("referenceNum") or r.get("poNum") or None,
+                vendor=r.get("shipCarrier") or None, location=fac or None,
+                expected_at=parse_iso(r.get("expectedDate")), arrived_at=arrived,
+                received_at=parse_iso(ro.get("processDate") or (r.get("arrivalDate") if done else None)),
+                pallets=len(pallets) or None, lines=list(lines.values()), notes=r.get("notes") or None,
+            ))
         for o in orders:
             ro = o.get("readOnly") or {}
             facility = str((ro.get("facilityIdentifier") or {}).get("id") or "")
@@ -215,6 +270,8 @@ class ExtensivConnector(FileImports, Connector):
                 placed_at=parse_iso(ro.get("creationDate")), updated_at=parse_iso(ro.get("lastModifiedDate")),
                 notes=notes, required_by=parse_iso(o.get("shipCancelDate")),
                 order_type="wholesale" if o.get("poNum") else None, shipped_at=parse_iso(ro.get("processDate")),
+                picked_at=parse_iso(ro.get("pickDoneDate")), packed_at=parse_iso(ro.get("packDoneDate")),
+                handled_by=(ro.get("lastModifiedByIdentifier") or {}).get("name") or None,
                 lines=[NOrderLine(sku=(i.get("itemIdentifier") or {}).get("sku"), qty=to_int(i.get("qty")))
                        for i in self._items(o)],
                 ship_from=facility or None,

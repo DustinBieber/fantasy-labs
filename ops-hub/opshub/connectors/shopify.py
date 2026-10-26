@@ -24,7 +24,10 @@ query Orders($cursor: String, $query: String) {
       customAttributes { key value }
       customer { displayName }
       lineItems(first: 100) { nodes { sku name quantity unfulfilledQuantity } }
-      fulfillments(first: 10) { createdAt status displayStatus trackingInfo(first: 5) { company number url } }
+      fulfillments(first: 10) {
+        createdAt deliveredAt inTransitAt status displayStatus
+        trackingInfo(first: 5) { company number url }
+      }
     }
   }
 }
@@ -60,7 +63,7 @@ class ShopifyConnector(FileImports, Connector):
     key = "shopify"
     name = "Shopify"
     category = "commerce"
-    capabilities = ("orders", "inventory", "sales", "shipments")
+    capabilities = ("orders", "inventory", "sales", "shipments", "outbound")
     settings_keys = ("SHOPIFY_SHOP", "SHOPIFY_ACCESS_TOKEN")
     import_folder_key = "SHOPIFY_IMPORT_FOLDER_ID"
     import_query_key = "SHOPIFY_IMPORT_GMAIL_QUERY"
@@ -126,6 +129,12 @@ class ShopifyConnector(FileImports, Connector):
         for o in orders:
             status = "cancelled" if o.get("cancelledAt") else STATUS_MAP.get(o.get("displayFulfillmentStatus"), "open")
             placed = parse_iso(o.get("createdAt"))
+            done = [f for f in o.get("fulfillments") or [] if f.get("status") in (None, "SUCCESS")]
+            shipped_at = min((parse_iso(f.get("createdAt")) for f in done if f.get("createdAt")), default=None)
+            delivered = [parse_iso(f.get("deliveredAt")) for f in done if f.get("deliveredAt")]
+            delivered_at = max(delivered) if delivered and len(delivered) == len(done) else None
+            if status == "shipped" and delivered_at:
+                status = "delivered"
             lines = [NOrderLine(sku=li.get("sku") or None, title=li.get("name"), qty=int(li.get("quantity") or 0),
                                 qty_fulfilled=int(li.get("quantity") or 0) - int(li.get("unfulfilledQuantity") or 0))
                      for li in o.get("lineItems", {}).get("nodes", [])]
@@ -135,7 +144,7 @@ class ShopifyConnector(FileImports, Connector):
                 placed_at=placed, updated_at=parse_iso(o.get("updatedAt")), notes=o.get("note"),
                 tags=list(o.get("tags") or []),
                 attributes={a["key"]: a["value"] for a in o.get("customAttributes") or [] if a.get("key")},
-                lines=lines, ship_from=sales_location,
+                lines=lines, ship_from=sales_location, shipped_at=shipped_at, delivered_at=delivered_at,
             ))
             if status != "cancelled" and placed:
                 for i, line in enumerate(lines):

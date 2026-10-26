@@ -5,7 +5,8 @@ its columns:
   orders     order number + status/created date, one row per line item (Shopify, Extensiv exports)
   lots       SKU + lot number + quantity (Extensiv stock-by-lot reports): lots and stock
   inventory  SKU + on-hand quantity (inventory listings): stock
-  sales      SKU + quantity + date (sales line reports: Lightspeed, RQ)
+  sales      SKU + quantity + date (sales line reports: Lightspeed, RQ), with the salesperson if listed
+  receipts   SKU + expected/received quantity or arrival date, no customer (3PL receivers, purchase orders)
 
 Files arrive from a Drive folder (``<SOURCE>_IMPORT_FOLDER_ID``), emails matching
 ``<SOURCE>_IMPORT_GMAIL_QUERY``, or the dashboard's Import button. Record ids from files start
@@ -21,7 +22,7 @@ from datetime import datetime
 from typing import ClassVar
 
 from ._util import to_dec, to_int
-from .base import NLocation, NLot, NOrder, NOrderLine, NSale, NShipment, NStock, SyncBatch
+from .base import NLocation, NLot, NOrder, NOrderLine, NReceipt, NReceiptLine, NSale, NShipment, NStock, SyncBatch
 
 BASE_ALIASES = {
     "store": ["store", "store name", "storename", "store id", "storeid", "shop", "shop name", "location",
@@ -61,6 +62,16 @@ BASE_ALIASES = {
     "tracking": ["tracking number", "tracking #", "tracking", "pro number", "pro #", "bol", "bill of lading"],
     "carrier": ["carrier", "shipping carrier", "shipping method", "ship via"],
     "po": ["po number", "po num", "po #", "purchase order"],
+    "employee": ["salesperson", "sales person", "sales rep", "employee", "employee name", "sold by", "cashier",
+                 "associate", "rep", "created by user"],
+    "receiver": ["receiver id", "receiver #", "receiver number", "receipt id", "receipt number", "receiving id",
+                 "asn", "asn #", "asn number", "po number", "po #", "purchase order", "order id"],
+    "vendor": ["vendor", "vendor name", "supplier", "supplier name", "ship carrier"],
+    "expected_qty": ["expected qty", "qty expected", "expected quantity", "expected", "qty ordered", "ordered qty",
+                     "order qty", "quantity ordered"],
+    "received_qty": ["received qty", "qty received", "received quantity", "num received", "qty checked in",
+                     "checked in"],
+    "arrival": ["arrival date", "expected date", "expected arrival", "eta", "due date", "arrived"],
 }
 
 # Per source: aliases tried before the base list, and fields whose base list is replaced.
@@ -113,6 +124,8 @@ def map_headers(header: list[str], source: str = "") -> dict[str, int]:
 
 
 def classify(m: dict[str, int]) -> str | None:
+    if "sku" in m and ("expected_qty" in m or "received_qty" in m or "arrival" in m) and "customer" not in m:
+        return "receipts"
     if "order" in m and ("status" in m or "created" in m) and ("sku" in m or "status" in m):
         return "orders"
     if "sku" in m and "lot" in m and ("on_hand" in m or "available" in m or "qty" in m):
@@ -241,8 +254,37 @@ def parse_export(rows: list[list[str]], *, source: str, tz: str, default_store: 
                 if amount is not None:
                     lines[ext].net_amount = (lines[ext].net_amount or 0) + amount
             else:
-                lines[ext] = NSale(external_id=ext, sku=sku, location=store, sold_at=when, qty=qty, net_amount=amount)
+                lines[ext] = NSale(external_id=ext, sku=sku, location=store, sold_at=when, qty=qty, net_amount=amount,
+                                   employee=cell(r, "employee") or None)
         batch.sales = list(lines.values())
+
+    elif kind == "receipts":
+        groups: dict[str, list[list[str]]] = defaultdict(list)
+        for r in body:
+            if cell(r, "sku") and cell(r, "sku").lower() not in skip:
+                ref = cell(r, "receiver") or cell(r, "order") or cell(r, "po") or str(parse_when(cell(r, "arrival"), tz))
+                groups[ref].append(r)
+        for ref, rs in groups.items():
+            first = lambda f: next((cell(r, f) for r in rs if cell(r, f)), "")  # noqa: E731
+            store = first("store") or default_store
+            stores.add(store)
+            lines_by_sku: dict[str, NReceiptLine] = {}
+            for r in rs:
+                ln = lines_by_sku.setdefault(cell(r, "sku"), NReceiptLine(sku=cell(r, "sku")))
+                got = to_int(cell(r, "received_qty"))
+                ln.expected += to_int(cell(r, "expected_qty")) or got or to_int(cell(r, "qty"))
+                ln.received += got
+            arrival, received = parse_when(first("arrival"), tz), parse_when(first("received"), tz)
+            got = sum(l.received for l in lines_by_sku.values())
+            text = first("status").lower()
+            status = ("cancelled" if "cancel" in text else "received" if received or "complete" in text
+                      or "closed" in text or (got and got >= sum(l.expected for l in lines_by_sku.values()))
+                      else "receiving" if got else "expected")
+            batch.receipts.append(NReceipt(
+                external_id=f"file:{ref}", status=status, kind="purchase_order" if source == "lightspeed" else "receipt",
+                reference=ref, vendor=first("vendor") or None, location=store, expected_at=arrival,
+                arrived_at=received if status != "expected" else None,
+                received_at=received if status == "received" else None, lines=list(lines_by_sku.values())))
 
     else:  # orders: one row per line item; order-level fields may only be on the first row
         groups: dict[str, list[list[str]]] = defaultdict(list)
@@ -312,7 +354,7 @@ def merge(batches: list[SyncBatch]) -> SyncBatch:
     for b in batches:
         for loc in b.locations:
             seen_locs.setdefault(loc.external_id, loc)
-        for attr in ("stock", "lots", "sales", "orders", "shipments"):
+        for attr in ("stock", "lots", "sales", "orders", "shipments", "receipts"):
             getattr(out, attr).extend(getattr(b, attr))  # later files win in ingest (same keys upsert)
     out.locations = list(seen_locs.values())
     return out
@@ -364,7 +406,7 @@ class FileImports:
                 report.append({"file": name, "kind": "error", "error": str(exc)[:200]})
                 continue
             report.append({"file": name, "kind": kind, "orders": len(b.orders), "stock_rows": len(b.stock),
-                           "lots": len(b.lots), "sales_lines": len(b.sales),
+                           "lots": len(b.lots), "sales_lines": len(b.sales), "receipts": len(b.receipts),
                            "stores": [l.name for l in b.locations]})
             if kind != "unknown":
                 batches.append(b)

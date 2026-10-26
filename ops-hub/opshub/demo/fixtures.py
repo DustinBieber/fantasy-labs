@@ -184,7 +184,16 @@ def sheets_master(now: datetime) -> dict[str, list[list[str]]]:
 def _shopify_order(oid: int, name: str, created: datetime, status: str, lines: list[tuple[str, int, int]], *,
                    note: str | None = None, tags: tuple[str, ...] = (), attrs: dict[str, str] | None = None,
                    customer: str = "Online customer", updated: datetime | None = None,
-                   cancelled: datetime | None = None, tracking: tuple[str, str, str] | None = None) -> dict:
+                   cancelled: datetime | None = None, tracking: tuple[str, str, str] | None = None,
+                   fulfilled: datetime | None = None, delivered: datetime | None = None) -> dict:
+    fulfillments = []
+    if tracking or fulfilled:
+        display = tracking[2] if tracking else ("DELIVERED" if delivered else "IN_TRANSIT")
+        fulfillments.append({
+            "createdAt": _z(fulfilled or updated or created), "deliveredAt": _z(delivered),
+            "inTransitAt": _z((fulfilled or updated or created) + timedelta(hours=6)), "status": "SUCCESS",
+            "displayStatus": display,
+            "trackingInfo": [{"company": tracking[0], "number": tracking[1], "url": None}] if tracking else []})
     return {
         "id": f"gid://shopify/Order/{oid}",
         "name": name,
@@ -199,9 +208,7 @@ def _shopify_order(oid: int, name: str, created: datetime, status: str, lines: l
         "customer": {"displayName": customer},
         "lineItems": {"nodes": [{"sku": sku, "name": NAME.get(sku, sku), "quantity": qty,
                                  "unfulfilledQuantity": open_qty} for sku, qty, open_qty in lines]},
-        "fulfillments": [] if not tracking else [
-            {"createdAt": _z(updated or created), "status": "SUCCESS", "displayStatus": tracking[2],
-             "trackingInfo": [{"company": tracking[0], "number": tracking[1], "url": None}]}],
+        "fulfillments": fulfillments,
     }
 
 
@@ -218,7 +225,8 @@ def shopify_orders(now: datetime) -> list[dict]:
         _shopify_order(5003, "#2043", h(26), "UNFULFILLED", [("PWR-20K", 2, 2), ("CASE-UNI", 1, 1)],
                        note="Customer asked: call before delivery, gate code 4412", customer="Priya Raman"),
         _shopify_order(5004, "#2044", h(96), "FULFILLED", [("CBC-32", 2, 0)], customer="Leo Brandt",
-                       updated=h(80), tracking=("UPS", "1Z999AA10123456784", "DELIVERED")),
+                       updated=h(30), fulfilled=h(80), delivered=h(30),
+                       tracking=("UPS", "1Z999AA10123456784", "DELIVERED")),
         _shopify_order(5005, "#2045", h(22), "UNFULFILLED", [("CBC-32", 2, 2), ("BAR-ENR", 1, 1)],
                        tags=("subscription", "Subscription Recurring Order"), customer="Dana Whitfield"),
         _shopify_order(5006, "#2046", h(144), "UNFULFILLED", [("HOL-GBX", 24, 24)], tags=("seasonal", "preorder"),
@@ -237,12 +245,14 @@ def shopify_orders(now: datetime) -> list[dict]:
         _shopify_order(5012, "#2052", h(1), "UNFULFILLED", [("CBC-12PK", 6, 6)], tags=("rush",),
                        note=f"RUSH - wedding favors, must arrive by {sat:%A}", customer="Jess Morgan"),
         _shopify_order(5013, "#2053", h(50), "FULFILLED", [("CHG-65W", 1, 0), ("CASE-UNI", 1, 0)],
-                       customer="Tom Becker", updated=h(40), tracking=("UPS", "1Z999AA10123456791", "IN_TRANSIT")),
+                       customer="Tom Becker", updated=h(40), fulfilled=h(40),
+                       tracking=("UPS", "1Z999AA10123456791", "IN_TRANSIT")),
         _shopify_order(5014, "#2054", h(25), "IN_PROGRESS", [("MTE-50", 2, 2)], customer="Nia Okafor",
                        updated=h(5)),
     ]
-    # Fulfilled history for sell-through, two SKUs per order.
+    # Fulfilled history for sell-through and outbound times, two SKUs per order.
     history = _daily_sales(now, HQ_GID, seed=11)
+    rng = random.Random(23)
     oid, num = 6000, 1001
     by_day: dict[int, list[tuple[str, int]]] = {}
     for days_ago, sku, qty in history:
@@ -252,8 +262,11 @@ def shopify_orders(now: datetime) -> list[dict]:
         for i in range(0, len(items), 2):
             created = now - timedelta(days=days_ago, hours=(i * 3) % 20)
             lines = [(sku, qty, 0) for sku, qty in items[i:i + 2]]
+            fulfilled = created + timedelta(hours=rng.uniform(3, 34))
+            delivered = fulfilled + timedelta(days=rng.choice((1, 2, 2, 3, 3, 4, 5, 7)), hours=rng.uniform(0, 8))
+            delivered = delivered if delivered < now else None
             orders.append(_shopify_order(oid, f"#{num}", created, "FULFILLED", lines,
-                                         updated=created + timedelta(hours=20)))
+                                         updated=delivered or fulfilled, fulfilled=fulfilled, delivered=delivered))
             oid += 1
             num += 1
     return orders
@@ -272,13 +285,19 @@ def shopify_inventory(now: datetime) -> list[dict]:
 
 # --- Extensiv 3PL Warehouse Manager (REST API shapes) --------------------------------------
 
+WH_STAFF = ("Kalani A.", "Jose R.", "Mele S.", "Tran N.")
+
+
 def _ext_order(oid: int, ref: str, status: int, allocated: bool, created: datetime, items: list[tuple[str, int]], *,
                company: str = "", notes: str = "", shipping_notes: str = "", cancel: datetime | None = None,
-               modified: datetime | None = None, po: str = "", tracking: str = "", carrier: str = "") -> dict:
+               modified: datetime | None = None, po: str = "", tracking: str = "", carrier: str = "",
+               picked: datetime | None = None, packed: datetime | None = None, by: str | None = None) -> dict:
     return {
         "readOnly": {"orderId": oid, "status": status, "fullyAllocated": allocated, "isClosed": status != 0,
                      "creationDate": _z(created), "lastModifiedDate": _z(modified or created),
                      "processDate": _z(modified or created) if status == 1 else None,
+                     "pickDoneDate": _z(picked), "packDoneDate": _z(packed),
+                     "lastModifiedByIdentifier": {"name": by} if by else None,
                      "facilityIdentifier": {"id": int(EXTENSIV_FACILITY), "name": "Riverside"}},
         "referenceNum": ref,
         "poNum": po,
@@ -294,21 +313,93 @@ def _ext_order(oid: int, ref: str, status: int, allocated: bool, created: dateti
 
 def extensiv_orders(now: datetime) -> list[dict]:
     h = lambda hours: now - timedelta(hours=hours)  # noqa: E731
-    return [
+    orders = [
         _ext_order(7101, "#2046", 0, True, h(120), [("HOL-GBX", 24)], company="Northwind Legal LLP",
-                   notes="Kit with printed note cards before shipping", modified=h(20)),
+                   notes="Kit with printed note cards before shipping", modified=h(20), by="Mele S."),
         _ext_order(7102, "#2043", 0, False, h(24), [("PWR-20K", 2), ("CASE-UNI", 1)], company="Priya Raman",
                    shipping_notes="Lithium batteries - ground only, DG label required"),
         _ext_order(7103, "WH-PO-88213", 1, True, h(100), [("CBC-12PK", 60), ("MTE-50", 40)],
                    company="Corner Market Co-op", po="88213", modified=h(72), carrier="QuickHaul Logistics",
-                   tracking="4471983"),
+                   tracking="4471983", picked=h(80), packed=h(76), by="Jose R."),
         _ext_order(7104, "WH-PO-88240", 0, False, h(30), [("CBC-32", 36), ("BAR-ENR", 24)],
                    company="Harbor Foods Distribution", po="88240", cancel=now + timedelta(days=2),
                    notes="Retailer requires 90+ days remaining to best-by. Appointment required - call "
                          "receiving 24h ahead."),
         _ext_order(7106, "#2044", 1, True, h(95), [("CBC-32", 2)], company="Leo Brandt", modified=h(80),
-                   carrier="UPS", tracking="1Z999AA10123456784"),
+                   carrier="UPS", tracking="1Z999AA10123456784", picked=h(88), packed=h(86), by="Kalani A."),
     ]
+    return orders + extensiv_order_history(now)
+
+
+def extensiv_order_history(now: datetime, days: int = 45) -> list[dict]:
+    """Closed overflow orders (online overflow and wholesale) for outbound and productivity history."""
+    rng = random.Random(31)
+    skus = [p[0] for p in PRODUCTS]
+    out, oid = [], 72000
+    for days_ago in range(days, 0, -1):
+        day = now - timedelta(days=days_ago)
+        if day.weekday() == 6:  # the 3PL doesn't ship on Sundays
+            continue
+        for _ in range(rng.randint(2, 9) if day.weekday() < 5 else rng.randint(0, 3)):
+            oid += 1
+            created = day.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=rng.uniform(15, 30))
+            picked = created + timedelta(hours=rng.uniform(1.5, 26))
+            packed = picked + timedelta(minutes=rng.uniform(10, 150))
+            shipped = packed + timedelta(hours=rng.uniform(0.5, 7))
+            if shipped >= now:
+                continue
+            wholesale = rng.random() < 0.15
+            items = [(sku, rng.randint(12, 60) if wholesale else rng.randint(1, 3))
+                     for sku in rng.sample(skus, rng.randint(1, 3))]
+            out.append(_ext_order(oid, f"WH-PO-8{oid % 10000:04d}" if wholesale else f"OVF-{oid}", 1, True, created,
+                                  items, company="Wholesale account" if wholesale else "Online overflow",
+                                  po=str(oid) if wholesale else "", modified=shipped, picked=picked, packed=packed,
+                                  by=rng.choice(WH_STAFF)))
+    return out
+
+
+def extensiv_receivers(now: datetime) -> list[dict]:
+    """Receivers (inbound receipts), as /inventory/receivers returns them."""
+    rng = random.Random(41)
+    rel = "http://api.3plCentral.com/rels/inventory/receiveitem"
+
+    def receiver(rid, ref, status, created, items, *, expected=None, arrived=None, stocked=None, po="", carrier="",
+                 notes="", by=None, pallets=0):
+        return {
+            "readOnly": {"receiverId": rid, "status": status, "creationDate": _z(created),
+                         "lastModifiedDate": _z(stocked or arrived or created),
+                         "processDate": _z(stocked or arrived) if status == 1 else None,
+                         "facilityIdentifier": {"id": int(EXTENSIV_FACILITY), "name": "Riverside"},
+                         "lastModifiedByIdentifier": {"name": by} if by else None},
+            "referenceNum": ref, "poNum": po, "expectedDate": _z(expected), "arrivalDate": _z(arrived),
+            "shipCarrier": carrier, "notes": notes,
+            "_embedded": {rel: [{"itemIdentifier": {"sku": sku}, "qty": qty,
+                                 "palletIdentifier": {"id": rid * 100 + i % max(pallets, 1)} if pallets else None}
+                                for i, (sku, qty) in enumerate(items)]},
+        }
+
+    out = []
+    rid = 3300
+    for days_ago in range(56, 3, -4):
+        rid += 1
+        exp = now - timedelta(days=days_ago)
+        arrived = exp + timedelta(hours=rng.choice((-20, 0, 4, 10, 26, 52)))
+        items = [(sku, rng.choice((48, 96, 120, 240))) for sku in rng.sample([p[0] for p in PRODUCTS], 2)]
+        out.append(receiver(rid, f"PO {7600 + rid % 100}", 1, exp - timedelta(days=6), items, expected=exp,
+                            arrived=arrived, stocked=arrived + timedelta(hours=rng.uniform(3, 40)),
+                            po=str(7600 + rid % 100), carrier=rng.choice(("Ridgeway Trucking",
+                            "Tri-State Express", "Harbor Drayage Co.")), by=rng.choice(WH_STAFF),
+                            pallets=rng.randint(2, 9)))
+    # Open: the container from Ningbo (ASN in, not arrived) and the HQ overflow move (on the dock).
+    out.append(receiver(3390, "PO 7781", 0, now - timedelta(days=20), [("PWR-20K", 240), ("CHG-65W", 180)],
+                        expected=now + timedelta(days=4), po="7781", carrier="Harbor Drayage Co.",
+                        notes="Hazmat UN3480 - lithium. Container MSCU7781234."))
+    out.append(receiver(3391, "TR-HQ-0921", 0, now - timedelta(days=7), [("PMK-SYR", 360), ("HOL-GBX", 288)],
+                        expected=now - timedelta(days=1), arrived=now - timedelta(hours=14), carrier="Ridgeway Trucking",
+                        notes="Overflow move from HQ: 18 pallets seasonal", pallets=18))
+    out.append(receiver(3392, "PO 7795", 0, now - timedelta(days=9), [("BAR-ENR", 144)],
+                        expected=now - timedelta(days=2), po="7795", carrier="Tri-State Express"))
+    return out
 
 
 def extensiv_lots(now: datetime) -> list[dict]:
@@ -442,27 +533,101 @@ def lightspeed_items() -> dict:
     return {"Item": items}
 
 
+# Store staff by shop: (employeeID, first, last, shift) - "am" opens, "pm" closes.
+LS_STAFF = {"1": [("11", "Keoni", "Kahale", "am"), ("12", "Lani", "Park", "pm"), ("13", "Mika", "Torres", "pm")],
+            "2": [("21", "Noa", "Fujita", "am"), ("22", "Ben", "Cruz", "pm")]}
+
+
+def lightspeed_employees() -> dict:
+    return {"Employee": [{"employeeID": eid, "firstName": first, "lastName": last, "archived": "false"}
+                         for staff in LS_STAFF.values() for eid, first, last, _ in staff]}
+
+
+def _shift_hours(shift: str) -> tuple[int, int]:
+    return (8, 15) if shift == "am" else (13, 20)  # Hawaii local hours
+
+
+def _hst(day: datetime, hour: float) -> datetime:
+    """A Hawaii-time hour on `day`'s local date, as naive UTC (HST is UTC-10, no DST)."""
+    local = (day - timedelta(hours=10)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return local + timedelta(hours=hour + 10)
+
+
+def lightspeed_employee_hours(now: datetime, days: int = 30) -> dict:
+    rows, hid = [], 7000
+    rng = random.Random(53)
+    for days_ago in range(days, -1, -1):
+        day = now - timedelta(days=days_ago)
+        for sid, staff in LS_STAFF.items():
+            for eid, _f, _l, shift in staff:
+                if rng.random() < 0.18 and days_ago:  # day off (everyone is in today)
+                    continue
+                start, end = _shift_hours(shift)
+                clock_in = _hst(day, start + rng.uniform(-0.2, 0.25))
+                clock_out = _hst(day, end + rng.uniform(-0.3, 0.6))
+                if clock_in >= now:
+                    continue
+                hid += 1
+                rows.append({"employeeHoursID": str(hid), "employeeID": eid, "shopID": sid,
+                             "checkIn": clock_in.isoformat() + "+00:00",
+                             "checkOut": clock_out.isoformat() + "+00:00" if clock_out < now else None})
+    return {"EmployeeHours": rows}
+
+
 def lightspeed_sales(now: datetime) -> dict:
     sales = []
     sale_id, line_id = 90000, 500000
+    rng = random.Random(61)
     for sid in LS_SHOPS:
         by_day: dict[int, list[tuple[str, int]]] = {}
         for days_ago, sku, qty in _daily_sales(now, sid, seed=int(sid) * 7):
             by_day.setdefault(days_ago, []).append((sku, qty))
         for days_ago, items in sorted(by_day.items(), reverse=True):
-            lines = []
-            for sku, qty in items:
-                line_id += 1
-                lines.append({"saleLineID": str(line_id), "itemID": LS_ITEM_IDS[sku], "unitQuantity": str(qty),
-                              "calcTotal": f"{qty * PRICE[sku]:.2f}"})
-            sale_id += 1
-            sales.append({
-                "saleID": str(sale_id), "shopID": sid, "completed": "true", "voided": "false",
-                "timeStamp": (now - timedelta(days=days_ago, hours=3)).replace(microsecond=0).isoformat() + "+00:00",
-                # A sale with one line comes back as an object, not a list.
-                "SaleLines": {"SaleLine": lines[0] if len(lines) == 1 else lines},
-            })
+            day = now - timedelta(days=days_ago)
+            # A few tickets a day, up to two items each, rung up by whoever is on shift.
+            for t in range(0, len(items), 2):
+                lines = []
+                for sku, qty in items[t:t + 2]:
+                    line_id += 1
+                    lines.append({"saleLineID": str(line_id), "itemID": LS_ITEM_IDS[sku], "unitQuantity": str(qty),
+                                  "calcTotal": f"{qty * PRICE[sku]:.2f}"})
+                hour = rng.uniform(9, 19.5)
+                on_shift = [e for e in LS_STAFF[sid] if _shift_hours(e[3])[0] <= hour < _shift_hours(e[3])[1]]
+                sale_id += 1
+                sales.append({
+                    "saleID": str(sale_id), "shopID": sid, "completed": "true", "voided": "false",
+                    "employeeID": rng.choice(on_shift or LS_STAFF[sid])[0],
+                    "timeStamp": _hst(day, hour).replace(microsecond=0).isoformat() + "+00:00",
+                    # A sale with one line comes back as an object, not a list.
+                    "SaleLines": {"SaleLine": lines[0] if len(lines) == 1 else lines},
+                })
     return {"Sale": sales}
+
+
+def lightspeed_purchase_orders(now: datetime) -> dict:
+    """Purchase orders to the stores (R-Series Order with OrderLines and Vendor)."""
+    def po(oid, sid, vendor, ordered, items, *, arrival, received=None, complete=False):
+        return {"orderID": str(oid), "shopID": sid, "vendorID": str(400 + len(vendor)), "refNum": f"PO-{oid}",
+                "orderedDate": _z(ordered).replace("Z", "+00:00"),
+                "arrivalDate": _z(arrival).replace("Z", "+00:00") if arrival else None,
+                "receivedDate": _z(received).replace("Z", "+00:00") if received else None,
+                "complete": "true" if complete else "false", "archived": "false",
+                "Vendor": {"vendorID": str(400 + len(vendor)), "name": vendor},
+                "OrderLines": {"OrderLine": [{"orderLineID": f"{oid}{i}", "itemID": LS_ITEM_IDS[sku],
+                                              "quantity": str(qty), "numReceived": str(got)}
+                                             for i, (sku, qty, got) in enumerate(items)]}}
+
+    d = lambda days: now + timedelta(days=days)  # noqa: E731
+    return {"Order": [
+        po(301, "1", "Island Coffee Supply", d(-26), [("CBC-32", 48, 48), ("CBC-12PK", 24, 24)], arrival=d(-21),
+           received=d(-20), complete=True),
+        po(302, "2", "Island Coffee Supply", d(-19), [("CBC-32", 36, 36), ("MTE-50", 24, 24)], arrival=d(-14),
+           received=d(-13), complete=True),
+        po(303, "1", "Brand HQ Transfer", d(-12), [("HOL-GBX", 20, 20), ("PMK-SYR", 30, 24)], arrival=d(-8),
+           received=d(-6), complete=True),
+        po(304, "2", "Pacific Merch Co.", d(-9), [("MUG-TRV", 24, 0), ("CASE-UNI", 30, 0)], arrival=d(-2)),
+        po(305, "1", "Island Coffee Supply", d(-3), [("CBC-32", 48, 0), ("BAR-ENR", 24, 0)], arrival=d(3)),
+    ]}
 
 
 # --- iQmetrix RQ (report rows; field names assumed until the Data Connect reports are confirmed) -----
@@ -476,13 +641,17 @@ def rq_inventory() -> list[dict]:
              "QuantityCommitted": 0} for sid in RQ_STORES for sku, qty in ON_HAND[sid].items()]
 
 
+RQ_REPS = {"101": ("Alana K.", "Devin M."), "102": ("Grace L.", "Pono W.")}
+
+
 def rq_sales(now: datetime) -> list[dict]:
     rows = []
     for sid in RQ_STORES:
         for n, (days_ago, sku, qty) in enumerate(_daily_sales(now, sid, seed=int(sid))):
             rows.append({"InvoiceIDByStore": f"{sid}-{n + 10000}", "LineID": 1, "StoreID": int(sid),
                          "DateCreated": _z(now - timedelta(days=days_ago, hours=5)), "ProductSKU": sku,
-                         "Quantity": qty, "TotalPrice": round(qty * PRICE[sku], 2)})
+                         "Quantity": qty, "TotalPrice": round(qty * PRICE[sku], 2),
+                         "SalesPerson": RQ_REPS[sid][n % 2]})
     return rows
 
 

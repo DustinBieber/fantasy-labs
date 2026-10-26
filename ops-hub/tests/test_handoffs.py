@@ -206,7 +206,11 @@ def test_scheduler_runs_sync_and_daily_jobs_once(session, settings, monkeypatch,
     now = utcnow()
     first = sched.tick(now)
     assert first[:1] == ["sync"] and {"muse_export", "digest"} <= set(first)
-    assert sched.tick(now + timedelta(minutes=5)) == []  # nothing due yet
+    assert sched.tick(now + timedelta(minutes=2)) == []  # nothing due yet
+    assert sched.due_connectors(session, settings, now + timedelta(minutes=5)) == ["shopify", "extensiv", "gmail"]
+    assert sched.tick(now + timedelta(minutes=5)) == ["sync"]  # fast pollers only; reports wait
+    assert sched.due_connectors(session, settings, now + timedelta(minutes=10)) == ["shopify", "extensiv", "lightspeed",
+                                                                                    "gmail"]
     assert sched.tick(now + timedelta(minutes=16)) == ["sync", "calendar", "sheets_report"]
     assert (tmp_path / "handoff" / "to-muse").is_dir()
 

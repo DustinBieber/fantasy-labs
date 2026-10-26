@@ -16,7 +16,7 @@ from ..connectors.base import NDocument
 from ..models import (ACTIVE_ORDER_STATUSES, OPEN_SHIPMENT_STATUSES, Alert, Forecast, HandoffFile, InboxItem, Invoice,
                       Location, Order, Product, Shipment, StandingOrder)
 from ..timeutil import end_of_day_utc, iso, local_date, utcnow
-from . import ai, billing, files, inventory, orders, shipments, signals
+from . import ai, billing, files, inventory, orders, shipments, signals, trackers
 
 SEVERITIES = {"urgent", "warn", "info"}
 
@@ -73,7 +73,23 @@ def build_export(session: Session, s: Settings, now: datetime | None = None) -> 
                              "lines": so.lines, "min_days_to_best_by": so.min_days_to_best_by}
                             for so in session.scalars(select(StandingOrder).where(StandingOrder.active.is_(True)))],
         "billing": invoices,
+        "trackers": _trackers(session, s, now),
         "reply": "Drop a muse-to-opshub-YYYY-MM-DD.json file in the Ops Hub inbox folder (format: MUSE_HANDOFF.md).",
+    }
+
+
+def _trackers(session: Session, s: Settings, now: datetime, days: int = 7) -> dict:
+    inb = trackers.inbound(session, s, now, days)
+    out = trackers.outbound(session, s, now, days)
+    prod = trackers.productivity(session, s, now, days)
+    keep = ("source", "kind", "reference", "vendor", "location", "status", "expected_at", "units_expected", "late",
+            "days_late")
+    return {
+        "days": days,
+        "inbound": {"kpis": inb["kpis"], "open_receipts": [{k: r[k] for k in keep} for r in inb["open"]]},
+        "outbound": {"kpis": out["kpis"], "stages": out["stages"], "by_origin": out["by_origin"], "aging": out["aging"]},
+        "productivity": {"kpis": prod["kpis"], "warehouse_handlers": prod["handlers"], "stores": prod["stores"],
+                         "people": prod["people"]},
     }
 
 
@@ -110,8 +126,34 @@ def brief_markdown(data: dict) -> str:
         lines += ["## 3PL invoices to review", *[f"- {b['vendor']} {b['invoice']}: billed ${b['billed']}, expected "
                                                  f"${b['expected']}, possible overbilling ${b['overbilled']}"
                                                  for b in data["billing"]], ""]
+    t = data.get("trackers")
+    if t:
+        i, o, p = t["inbound"]["kpis"], t["outbound"]["kpis"], t["productivity"]["kpis"]
+        lines += [f"## Inbound, outbound and productivity (last {t['days']} days)",
+                  f"- Inbound: {i['open_receipts']} receipts open ({i['late_receipts']} late, {i['on_dock']} on the dock), "
+                  f"{i['units_due_7d']} units due in 7 days; received {i['received_units']} units on "
+                  f"{i['received_receipts']} receipts, on time {_pct(i['on_time_pct'])}, "
+                  f"dock-to-stock {_num(i['dock_to_stock_hours'], 'h')}.",
+                  f"- Outbound: shipped {o['shipped']} orders ({o['shipped_today']} today), backlog {o['backlog']} "
+                  f"({o['backlog_over_48h']} over 48h), order-to-ship {_num(o['order_to_ship_hours'], 'h')} median, "
+                  f"{_pct(o['within_48h_pct'])} within 48h, ship-to-deliver {_num(o['ship_to_deliver_days'], ' days')}.",
+                  f"- Warehouse: {p['warehouse_orders_shipped']} orders, {_num(p['warehouse_orders_per_day'])} a day, "
+                  f"pick-to-ship {_num(p['warehouse_pick_to_ship_hours'], 'h')}. Stores: ${p['store_revenue']} on "
+                  f"{p['store_labor_hours']} labor hours (${_num(p['store_revenue_per_labor_hour'])}/hour).", ""]
+        late = [r for r in t["inbound"]["open_receipts"] if r["late"]]
+        if late:
+            lines += ["Late receipts:", *[f"- {r['reference']} ({r['vendor'] or r['source']}) to {r['location']}: "
+                                          f"{r['units_expected']} units, {r['days_late']} days late" for r in late], ""]
     lines += ["---", data["reply"]]
     return "\n".join(lines)
+
+
+def _num(x, unit: str = "") -> str:
+    return "-" if x is None else f"{x}{unit}"
+
+
+def _pct(x) -> str:
+    return "-" if x is None else f"{x}%"
 
 
 def export_daily(session: Session, s: Settings, env: dict[str, str] | None = None, now: datetime | None = None) -> dict:

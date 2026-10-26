@@ -138,6 +138,7 @@ class SaleLine(Base):
     sold_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     qty: Mapped[int] = mapped_column(Integer)
     net_amount: Mapped[Decimal | None] = mapped_column(Dec)
+    employee: Mapped[str | None] = mapped_column(String(160))
 
 
 # --- orders -----------------------------------------------------------------------
@@ -190,6 +191,11 @@ class Order(Base):
     # Notes added outside the order systems: [{"source": "muse", "note": ..., "at": iso}]
     external_notes: Mapped[list | None] = mapped_column(JSON)
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Warehouse milestones (Extensiv) and delivery (carrier), for outbound and productivity tracking.
+    picked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    packed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    handled_by: Mapped[str | None] = mapped_column(String(160))
     # Earliest deadline found anywhere (system, attributes, tags, notes, AI, linked warehouse records).
     required_by: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     required_by_source: Mapped[str | None] = mapped_column(String(40))  # system|attribute|tag|note|ai|linked
@@ -426,6 +432,50 @@ class ProcessedDocument(Base):
     kind: Mapped[str] = mapped_column(String(40))  # tracking_update | invoice | ignored | failed
     summary: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Receipt(Base):
+    """Inbound stock: a 3PL receiver, a POS purchase order, an incoming transfer."""
+
+    __tablename__ = "receipts"
+    __table_args__ = (UniqueConstraint("source", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(40))
+    external_id: Mapped[str] = mapped_column(String(160))
+    kind: Mapped[str] = mapped_column(String(20), default="receipt")  # receipt | purchase_order | transfer
+    reference: Mapped[str | None] = mapped_column(String(160), index=True)  # PO / ASN / receiver number
+    vendor: Mapped[str | None] = mapped_column(String(200))
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"))
+    status: Mapped[str] = mapped_column(String(20), default="expected")  # expected | receiving | received | cancelled
+    expected_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    arrived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime)
+    units_expected: Mapped[int] = mapped_column(Integer, default=0)
+    units_received: Mapped[int] = mapped_column(Integer, default=0)
+    pallets: Mapped[int | None] = mapped_column(Integer)
+    lines: Mapped[list] = mapped_column(JSON, default=list)  # [{"sku", "expected", "received"}]
+    notes: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    location: Mapped[Location | None] = relationship()
+
+
+class LaborShift(Base):
+    """Clocked hours (POS time clock), for sales and units per labor hour."""
+
+    __tablename__ = "labor_shifts"
+    __table_args__ = (UniqueConstraint("source", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(40))
+    external_id: Mapped[str] = mapped_column(String(160))
+    employee: Mapped[str] = mapped_column(String(160))
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"))
+    clock_in: Mapped[datetime] = mapped_column(DateTime, index=True)
+    clock_out: Mapped[datetime | None] = mapped_column(DateTime)
+
+    location: Mapped[Location | None] = relationship()
 
 
 class KeyValue(Base):

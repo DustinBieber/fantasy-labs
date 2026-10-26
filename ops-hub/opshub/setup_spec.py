@@ -128,6 +128,17 @@ SECTIONS = [
             ("OPENAI_API_KEY", "OpenAI API key", True, "platform.openai.com"),
         ],
     },
+    {
+        "key": "api", "title": "Read-only API key (Muse, ChatGPT, Gemini, Sheets)", "connectors": [],
+        "intro": ("Lets other tools read Ops Hub's data without the dashboard password: send it as "
+                  "\"Authorization: Bearer <key>\" on any GET under {base}/api/ (schema: {base}/openapi.json), or add "
+                  "?token=<key> to a CSV export URL for Google Sheets IMPORTDATA. It can read, never change anything. "
+                  "Creating a new key replaces the old one."),
+        "actions": [{"id": "read_token", "label": "Create a new key", "post": "/api/setup/read-token"}],
+        "fields": [
+            ("OPSHUB_READ_TOKEN", "Read-only API key", True, "Use Create a new key, or paste 24+ random characters"),
+        ],
+    },
 ]
 
 ALL_KEYS = {f[0] for s in SECTIONS for f in s["fields"]}

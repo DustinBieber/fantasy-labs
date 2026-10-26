@@ -18,7 +18,7 @@ async function api(path, opts = {}) {
 const post = (path, body) => api(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
 
 const state = { tz: undefined, demo: false, orderView: "watch", orderQuery: "", invTab: "stock",
-  shipView: "open", invoiceId: null, alertSev: "all" };
+  shipView: "open", invoiceId: null, alertSev: "all", trackDays: 30 };
 
 function fmtDate(iso, opts = {}) {
   if (!iso) return "";
@@ -578,15 +578,18 @@ async function renderConnectors(view) {
 function connCard(c) {
   const [cls, label] = modeLabel(c);
   const run = c.last_run;
-  const stats = run && run.stats ? Object.entries(run.stats).filter(([k, v]) => v && !k.startsWith("signals_"))
+  const stats = run && run.stats ? Object.entries(run.stats).filter(([k, v]) => v && !k.startsWith("signals_") && k !== "warnings")
     .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ") : "";
+  const warnings = (run && run.stats && run.stats.warnings) || [];
   return `<div class="card conn">
     <div class="row"><span class="name">${esc(c.name)}</span><div class="grow"></div><span class="badge mode-${cls}">${esc(label)}</span></div>
     <div>${chips(c.capabilities)}</div>
     <div class="small muted">${esc(c.status_note)}</div>
     ${c.missing_settings.length && c.mode !== "live" ? `<div class="small">Needs: ${c.missing_settings.map((k) => `<code>${esc(k)}</code>`).join(" ")}</div>` : ""}
     ${run ? `<div class="small"><span class="${run.status === "ok" ? "t-ok" : run.status === "error" ? "t-urgent" : "muted"}">Last sync ${esc(run.status)}</span>
-      <span class="muted">${fmtDateTime(run.finished_at)}</span>${stats ? `<div class="muted">${esc(stats)}</div>` : ""}
+      <span class="muted">${fmtDateTime(run.finished_at)}</span>${c.interval_minutes ? `<span class="muted"> · every ${c.interval_minutes} min</span>` : ""}
+      ${stats ? `<div class="muted">${esc(stats)}</div>` : ""}
+      ${warnings.map((w) => `<div class="t-warn">Skipped: ${esc(w.split("\n")[0])}</div>`).join("")}
       ${run.error && run.status !== "ok" ? `<div class="muted">${esc(run.error.split("\n")[0])}</div>` : ""}</div>` : ""}
     <div class="row">${c.pulls && c.mode !== "planned" ? `<button class="btn small" data-sync="${esc(c.key)}">Sync now</button>` : ""}
       ${c.imports ? `<label class="btn small">Import file<input type="file" data-import="${esc(c.key)}" accept=".csv,.tsv,.xlsx,.xlsm" hidden></label>` : ""}
@@ -637,6 +640,12 @@ async function renderSetup(view) {
     out.innerHTML = `<span class="muted">Working... (this can take a minute)</span>`;
     try {
       const r = await post(b.dataset.actionPost.replace(/^\/api/, ""));
+      if (r.token) {
+        out.innerHTML = `<div class="t-ok">✓ New read-only key (copy it now; it is shown once):</div><pre class="note">${esc(r.token)}</pre>
+          <div class="small muted">Example: <code>curl -H "Authorization: Bearer ${esc(r.token)}" ${esc(location.origin)}/api/trackers/outbound</code></div>`;
+        b.disabled = false;
+        return;
+      }
       out.innerHTML = `<div class="t-ok">✓ Done in ${esc(r.account || "")}.</div>
         <div class="small muted">${r.created && r.created.length ? "Created: " + esc(r.created.join(", ")) : "Everything already existed."}
         ${r.saved && r.saved.length ? "<br>Saved: " + esc(r.saved.join(", ")) : ""} ${r.calendar ? "<br>Calendar: " + esc(r.calendar) : ""}</div>
@@ -688,8 +697,406 @@ function setupCard(sec) {
   </div>`;
 }
 
-const VIEWS = { overview: renderOverview, orders: renderOrders, inventory: renderInventory, freight: renderFreight,
-  billing: renderBilling, connectors: renderConnectors, setup: renderSetup };
+// ---- charts (inline SVG) ----------------------------------------------------------------
+// Marks use the --series-N tokens (validated for the light and dark panels); all text uses text tokens.
+// Every chart has a hover/focus tooltip and a data table, so no value depends on color or hover alone.
+
+const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
+const OTHER = "var(--series-other)";
+const SVGNS = "http://www.w3.org/2000/svg";
+
+const compact = (n) => {
+  const a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (a >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(Math.round(n * 10) / 10);
+};
+
+function niceStep(raw, integer) {
+  if (raw <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= raw);
+  return integer ? Math.max(1, Math.ceil(step)) : step;
+}
+
+function svgEl(tag, attrs = {}, parent) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (parent) parent.appendChild(el);
+  return el;
+}
+
+// Rounded on the data end (top or right), square at the baseline.
+function topRounded(x, yTop, w, yBottom, r) {
+  r = Math.max(0, Math.min(r, w / 2, yBottom - yTop));
+  return `M${x},${yBottom}V${yTop + r}Q${x},${yTop} ${x + r},${yTop}H${x + w - r}Q${x + w},${yTop} ${x + w},${yTop + r}V${yBottom}Z`;
+}
+function rightRounded(xLeft, y, xRight, h, r) {
+  r = Math.max(0, Math.min(r, h / 2, xRight - xLeft));
+  return `M${xLeft},${y}H${xRight - r}Q${xRight},${y} ${xRight},${y + r}V${y + h - r}Q${xRight},${y + h} ${xRight - r},${y + h}H${xLeft}Z`;
+}
+
+const tip = (() => {
+  const el = document.createElement("div");
+  el.className = "viz-tip";
+  el.hidden = true;
+  document.body.appendChild(el);
+  return el;
+})();
+
+// rows: [{value, label, color?}] - value leads, label follows; untrusted text goes in via textContent.
+function showTip(title, rows, x, y) {
+  tip.replaceChildren();
+  const h = document.createElement("div");
+  h.className = "viz-tip-title";
+  h.textContent = title;
+  tip.appendChild(h);
+  for (const r of rows) {
+    const line = document.createElement("div");
+    line.className = "viz-tip-row";
+    if (r.color) {
+      const key = document.createElement("i");
+      key.className = "viz-key";
+      key.style.background = r.color;
+      line.appendChild(key);
+    }
+    const v = document.createElement("b");
+    v.textContent = r.value;
+    const k = document.createElement("span");
+    k.textContent = r.label;
+    line.append(v, k);
+    tip.appendChild(line);
+  }
+  tip.hidden = false;
+  const w = tip.offsetWidth, ht = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(x + 14, window.innerWidth - w - 8)) + "px";
+  tip.style.top = Math.max(8, Math.min(y - ht - 10, window.innerHeight - ht - 8)) + "px";
+}
+const hideTip = () => { tip.hidden = true; };
+
+function hoverable(target, onShow, onHide) {
+  const at = (e) => {
+    if (e.clientX !== undefined) return [e.clientX, e.clientY];
+    const b = target.getBoundingClientRect();
+    return [b.left + b.width / 2, b.top];
+  };
+  target.addEventListener("pointermove", (e) => onShow(...at(e)));
+  target.addEventListener("focus", (e) => onShow(...at(e)));
+  target.addEventListener("pointerleave", () => { hideTip(); onHide && onHide(); });
+  target.addEventListener("blur", () => { hideTip(); onHide && onHide(); });
+}
+
+function legend(series) {
+  return series.length < 2 ? "" : `<div class="viz-legend">${series.map((s) =>
+    `<span><i class="viz-swatch" style="background:${s.color}"></i>${esc(s.label)}</span>`).join("")}</div>`;
+}
+
+function dataTable(headers, rows) {
+  return `<details class="viz-table"><summary>Data table</summary>${table(headers, rows.map((r) =>
+    `<tr>${r.map((c, i) => `<td class="${i ? "num" : ""}">${esc(c)}</td>`).join("")}</tr>`))}</details>`;
+}
+
+function vizCard(title, sub, body) {
+  return `<div class="card viz"><div class="viz-title">${esc(title)}</div>${sub ? `<div class="viz-sub">${sub}</div>` : ""}${body}</div>`;
+}
+
+// Draw once the element is in the page (it needs its width); redraw on resize.
+function mountChart(el, draw) {
+  el.dataset.viz = "1";
+  el._draw = () => { el.replaceChildren(); draw(el, Math.max(260, el.clientWidth)); };
+  el._draw();
+}
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => document.querySelectorAll("[data-viz]").forEach((el) => el._draw && el._draw()), 150);
+});
+
+// Columns over days, stacked when there is more than one series.
+// rows: [{x: "YYYY-MM-DD", values: {key: n}}]; series: [{key, label, color}]
+function drawColumns(el, width, { rows, series, integer = true, fmt = compact, height = 180 }) {
+  const m = { l: 38, r: 6, t: 10, b: 24 };
+  const pw = width - m.l - m.r, ph = height - m.t - m.b;
+  const totals = rows.map((r) => series.reduce((a, s) => a + (r.values[s.key] || 0), 0));
+  const step = niceStep(Math.max(...totals, 0) / 4, integer);
+  const top = Math.max(step, step * Math.ceil(Math.max(...totals, 0) / step));
+  const y = (v) => m.t + ph - (v / top) * ph;
+  const svg = svgEl("svg", { width, height, role: "group", "aria-label": series.map((s) => s.label).join(", ") }, el);
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    if (v > 0) svgEl("line", { x1: m.l, x2: width - m.r, y1: y(v), y2: y(v), class: "viz-gridline" }, svg);
+    svgEl("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end" }, svg).textContent = fmt(v);
+  }
+  const band = pw / Math.max(rows.length, 1);
+  const bw = Math.max(2, Math.min(24, band - 2));
+  const hl = svgEl("rect", { x: 0, y: m.t, width: band, height: ph, class: "viz-band", visibility: "hidden" }, svg);
+  const marks = svgEl("g", {}, svg);
+  const labelEvery = Math.ceil(rows.length / Math.max(1, Math.floor(pw / 58)));
+  rows.forEach((r, i) => {
+    const x = m.l + i * band + (band - bw) / 2;
+    let cum = 0;
+    const visible = series.filter((s) => (r.values[s.key] || 0) > 0);
+    visible.forEach((s, j) => {
+      const v = r.values[s.key];
+      const yTop = y(cum + v), yBottom = y(cum) - (cum > 0 ? 2 : 0);  // 2px surface gap between segments
+      cum += v;
+      if (yBottom - yTop <= 0) return;
+      svgEl("path", { d: j === visible.length - 1 ? topRounded(x, yTop, bw, yBottom, 4)
+        : `M${x},${yBottom}V${yTop}H${x + bw}V${yBottom}Z`, fill: s.color }, marks);
+    });
+    if (i % labelEvery === 0 || i === rows.length - 1 && rows.length < 10) {
+      svgEl("text", { x: m.l + i * band + band / 2, y: height - 6, "text-anchor": "middle" }, svg).textContent = fmtDate(r.x);
+    }
+    const hit = svgEl("rect", { x: m.l + i * band, y: m.t, width: band, height: ph, class: "viz-hit", tabindex: 0,
+      "aria-label": `${fmtDate(r.x)}: ${series.map((s) => `${s.label} ${fmt(r.values[s.key] || 0)}`).join(", ")}` }, svg);
+    hoverable(hit, (cx, cy) => {
+      hl.setAttribute("x", m.l + i * band);
+      hl.setAttribute("visibility", "visible");
+      const lines = series.map((s) => ({ value: fmt(r.values[s.key] || 0), label: s.label, color: series.length > 1 ? s.color : null }));
+      if (series.length > 1) lines.push({ value: fmt(totals[i]), label: "total" });
+      showTip(fmtDate(r.x, { weekday: "short" }), lines, cx, cy);
+    }, () => hl.setAttribute("visibility", "hidden"));
+  });
+  svgEl("line", { x1: m.l, x2: width - m.r, y1: y(0), y2: y(0), class: "viz-axis" }, svg);
+}
+
+// Horizontal bars, one series, value at the tip. items: [{label, value, text}]
+function drawBars(el, width, { items, color = SERIES[0], fmt = compact }) {
+  const rowH = 30, bar = 14;
+  const labelW = Math.min(150, Math.max(70, Math.round(width * 0.32)));
+  const valueW = 64;
+  const height = Math.max(rowH, items.length * rowH) + 4;
+  const svg = svgEl("svg", { width, height, role: "group" }, el);
+  const max = Math.max(...items.map((d) => d.value), 0) || 1;
+  const x0 = labelW + 8, span = width - x0 - valueW;
+  svgEl("line", { x1: x0, x2: x0, y1: 0, y2: height - 4, class: "viz-axis" }, svg);
+  items.forEach((d, i) => {
+    const yMid = i * rowH + rowH / 2;
+    const label = svgEl("text", { x: labelW, y: yMid + 4, "text-anchor": "end", class: "viz-label" }, svg);
+    label.textContent = d.label.length > 22 ? d.label.slice(0, 21) + "…" : d.label;
+    const w = Math.max(0, (d.value / max) * span);
+    if (w > 0) svgEl("path", { d: rightRounded(x0, yMid - bar / 2, x0 + w, bar, 4), fill: color }, svg);
+    svgEl("text", { x: x0 + w + 6, y: yMid + 4, class: "viz-value" }, svg).textContent = d.text ?? fmt(d.value);
+    const hit = svgEl("rect", { x: 0, y: i * rowH, width, height: rowH, class: "viz-hit", tabindex: 0,
+      "aria-label": `${d.label}: ${d.text ?? fmt(d.value)}` }, svg);
+    hoverable(hit, (cx, cy) => showTip(d.label, [{ value: d.text ?? fmt(d.value), label: d.unit || "" }], cx, cy));
+  });
+}
+
+// One bar split into consecutive parts (e.g. stage times). parts: [{label, value, color}]
+function drawSegments(el, width, { parts, fmt }) {
+  const height = 28, bar = 18, y = 4;
+  const svg = svgEl("svg", { width, height, role: "group" }, el);
+  const total = parts.reduce((a, p) => a + (p.value || 0), 0) || 1;
+  let x = 0;
+  parts.forEach((p, i) => {
+    const w = ((p.value || 0) / total) * width - (i < parts.length - 1 ? 2 : 0);
+    if (w > 0) {
+      svgEl("path", { d: i === parts.length - 1 ? rightRounded(x, y, x + w, bar, 4) : `M${x},${y}H${x + w}V${y + bar}H${x}Z`,
+        fill: p.color }, svg);
+      const hit = svgEl("rect", { x, y: 0, width: w + 2, height, class: "viz-hit", tabindex: 0,
+        "aria-label": `${p.label}: ${fmt(p.value)}` }, svg);
+      hoverable(hit, (cx, cy) => showTip(p.label, [{ value: fmt(p.value), label: "median" }], cx, cy));
+    }
+    x += w + 2;
+  });
+}
+
+// ---- trackers: inbound / outbound / productivity -----------------------------------------
+
+const TRACKER_TABS = new Set(["inbound", "outbound", "productivity"]);
+const num = (v, unit = "") => v == null ? "-" : `${Number(v).toLocaleString()}${unit}`;
+const hrs = (v) => v == null ? "-" : v >= 48 ? `${(v / 24).toFixed(1)} d` : `${v} h`;
+
+function trackerHead(title, csv) {
+  return `<div class="section-head"><h2>${esc(title)}</h2>
+    ${pills([["7", "7 days"], ["30", "30 days"], ["90", "90 days"]], String(state.trackDays), "days")}
+    <div class="grow"></div><span class="muted small">Refreshes every minute</span>
+    ${csv.map(([name, label]) => `<a class="btn small" href="/api/export/${name}.csv?days=${state.trackDays}">${esc(label)}</a>`).join("")}</div>`;
+}
+function bindTracker(view) {
+  view.querySelectorAll("[data-days]").forEach((b) => b.addEventListener("click", () => {
+    state.trackDays = Number(b.dataset.days); render();
+  }));
+  view.querySelectorAll("[data-order]").forEach((tr) => tr.addEventListener("click", () => openOrder(Number(tr.dataset.order))));
+  view.querySelectorAll("[data-shipment]").forEach((tr) => tr.addEventListener("click", () => openShipment(Number(tr.dataset.shipment))));
+}
+const statusChip = (s, late) => `<span class="chip ${late ? "urgent" : s === "receiving" ? "info" : s === "received" ? "ok" : ""}">${esc(late ? "late" : s)}</span>`;
+
+async function renderInbound(view) {
+  const d = await api(`/trackers/inbound?days=${state.trackDays}`);
+  const k = d.kpis;
+  const series = [{ key: "units", label: "Units received", color: SERIES[0] }];
+  view.innerHTML = `${trackerHead("Inbound", [["inbound", "Export CSV"]])}
+    <div class="kpis">
+      ${kpi("Open receipts", k.open_receipts, `<b class="${k.late_receipts ? "t-urgent" : ""}">${k.late_receipts} late</b> · ${k.on_dock} on the dock`)}
+      ${kpi("Units due in 7 days", num(k.units_due_7d), `${k.freight_open} inbound shipments · <b class="${k.freight_late ? "t-warn" : ""}">${k.freight_late} late</b>`)}
+      ${kpi(`Received (${d.days}d)`, num(k.received_units), `${k.received_receipts} receipts · ${num(k.received_pallets)} pallets`)}
+      ${kpi("Arrived on time", num(k.on_time_pct, "%"), `fill rate ${num(k.fill_rate_pct, "%")} · <b class="${k.short_receipts ? "t-warn" : ""}">${k.short_receipts} short</b>`)}
+      ${kpi("Dock to stock", hrs(k.dock_to_stock_hours), "median, arrival to put-away")}
+    </div>
+    <div class="section-head"><h2>Receiving</h2></div>
+    ${vizCard("Units received per day", "", `<div id="ch-received" class="viz-plot"></div>` +
+      dataTable(["Date", "Units", "Receipts"], d.series.map((r) => [r.date, r.units, r.receipts])))}
+    <div class="viz-grid">
+      ${vizCard("Units due, next 8 days", "Late receipts count as due today.", `<div id="ch-upcoming" class="viz-plot"></div>` +
+        dataTable(["Date", "Units", "Receipts"], d.upcoming.map((r) => [r.date, r.units, r.receipts])))}
+      ${vizCard(`Units received by location (${d.days}d)`, "", `<div id="ch-byloc" class="viz-plot"></div>` +
+        dataTable(["Location", "Units", "Receipts", "Open"], d.by_location.map((r) => [r.location, r.received_units, r.receipts, r.open])))}
+    </div>
+    <div class="section-head"><h2>Open receipts</h2><span class="muted small">3PL receivers, store purchase orders, transfers</span></div>
+    <div class="card">${table(["Status", "Reference", "From", "To", "Expected", { label: "Units", cls: "num" }, { label: "Pallets", cls: "num" }, "Notes"],
+      d.open.map((r) => `<tr><td>${statusChip(r.status, r.late)}${r.late ? ` <span class="small muted">${r.days_late}d</span>` : ""}</td>
+        <td><b>${esc(r.reference || "-")}</b><div class="small muted">${esc(r.source)} ${esc(r.kind.replace("_", " "))}</div></td>
+        <td>${esc(r.vendor || "")}</td><td>${esc(r.location)}</td>
+        <td>${fmtDate(r.expected_at)}<div class="small muted">${rel(r.expected_at)}</div></td>
+        <td class="num">${num(r.units_expected)}</td><td class="num">${num(r.pallets)}</td>
+        <td class="notes">${esc(r.notes || r.lines.map((l) => `${l.sku} ×${l.expected}`).join(", "))}</td></tr>`), "Nothing expected.")}</div>
+    <div class="section-head"><h2>Inbound freight</h2></div>
+    <div class="card">${table(["Reference", "Status", "Carrier", "To", "ETA", ""], d.freight.map((f) => `<tr class="click" data-shipment="${f.id}">
+        <td><b>${esc(f.reference)}</b><div class="small muted">${esc(f.direction)} ${esc(f.mode)}</div></td>
+        <td>${esc(f.status.replace(/_/g, " "))}</td><td>${esc(f.carrier || "")}${f.agent ? `<div class="small muted">via ${esc(f.agent)}</div>` : ""}</td>
+        <td>${esc(f.destination || "")}</td><td>${fmtDate(f.eta)}<div class="small muted">${rel(f.eta)}</div></td>
+        <td>${f.late ? `<span class="chip urgent">late</span>` : ""}${f.stale ? `<span class="chip warn">no update</span>` : ""}${f.hazmat ? `<span class="chip warn">hazmat</span>` : ""}</td></tr>`),
+      "No inbound freight in transit.")}</div>
+    <div class="section-head"><h2>Received in the last ${d.days} days</h2></div>
+    <div class="card">${table(["Reference", "To", "From", "Expected", "Arrived", "Put away", { label: "Units", cls: "num" }, { label: "Dock to stock", cls: "num" }],
+      d.received.map((r) => `<tr><td><b>${esc(r.reference || "-")}</b><div class="small muted">${esc(r.source)}</div></td>
+        <td>${esc(r.location)}</td><td>${esc(r.vendor || "")}</td><td>${fmtDate(r.expected_at)}</td><td>${fmtDateTime(r.arrived_at)}</td>
+        <td>${fmtDateTime(r.received_at)}</td>
+        <td class="num">${num(r.units_received)}${r.short_units ? ` <span class="chip warn">${r.short_units} short</span>` : ""}</td>
+        <td class="num">${hrs(r.dock_to_stock_hours)}</td></tr>`), "Nothing received in this window.")}</div>`;
+  mountChart($("#ch-received", view), (el, w) => drawColumns(el, w, { series,
+    rows: d.series.map((r) => ({ x: r.date, values: { units: r.units } })) }));
+  mountChart($("#ch-upcoming", view), (el, w) => drawColumns(el, w, { height: 150,
+    series: [{ key: "units", label: "Units due", color: SERIES[0] }],
+    rows: d.upcoming.map((r) => ({ x: r.date, values: { units: r.units } })) }));
+  mountChart($("#ch-byloc", view), (el, w) => drawBars(el, w, {
+    items: d.by_location.map((r) => ({ label: r.location, value: r.received_units, unit: `units on ${r.receipts} receipts` })) }));
+  bindTracker(view);
+}
+
+function originSeries(byOrigin) {
+  // Color follows the location (sorted by code), not its rank; past three, the rest fold into Other.
+  const codes = byOrigin.map((o) => o.origin).sort();
+  const main = codes.slice(0, 3);
+  const series = main.map((c, i) => ({ key: c, label: c, color: SERIES[i] }));
+  if (codes.length > 3) series.push({ key: "__other", label: "Other", color: OTHER });
+  return { series, fold: (code) => main.includes(code) ? code : "__other" };
+}
+
+async function renderOutbound(view) {
+  const d = await api(`/trackers/outbound?days=${state.trackDays}`);
+  const k = d.kpis, st = d.stages;
+  const { series, fold } = originSeries(d.by_origin);
+  const rows = d.series.map((r) => {
+    const values = {};
+    for (const [code, n] of Object.entries(r.by_origin || {})) values[fold(code)] = (values[fold(code)] || 0) + n;
+    return { x: r.date, values };
+  });
+  const stageParts = [["Order to pick", st.order_to_pick_hours], ["Pick to pack", st.pick_to_pack_hours],
+    ["Pack to ship", st.pack_to_ship_hours]].map(([label, value], i) => ({ label, value, color: SERIES[i] }));
+  view.innerHTML = `${trackerHead("Outbound", [["outbound", "Shipped CSV"], ["backlog", "Backlog CSV"]])}
+    <div class="kpis">
+      ${kpi("Shipped today", num(k.shipped_today), `${num(k.shipped)} in ${d.days} days · ${num(k.shipped_units)} units`)}
+      ${kpi("Backlog", num(k.backlog), `<b class="${k.backlog_over_48h ? "t-warn" : ""}">${k.backlog_over_48h} over 48h</b> · ${k.backlog_on_hold} on hold`)}
+      ${kpi("Order to ship", hrs(k.order_to_ship_hours), `median · 90% within ${hrs(k.order_to_ship_p90_hours)}`)}
+      ${kpi("Shipped within 48h", num(k.within_48h_pct, "%"), `within 24h ${num(k.within_24h_pct, "%")}`)}
+      ${kpi("Ship to delivery", k.ship_to_deliver_days == null ? "-" : `${k.ship_to_deliver_days} d`,
+        k.deadline_orders ? `deadline met ${num(k.deadline_met_pct, "%")} of ${k.deadline_orders}` : "median, carrier delivery scans")}
+    </div>
+    <div class="section-head"><h2>Volume</h2></div>
+    ${vizCard("Orders shipped per day, by ship-from location", "", legend(series) + `<div id="ch-shipped" class="viz-plot"></div>` +
+      dataTable(["Date", "Placed", "Shipped", "Delivered", ...series.map((s) => s.label)],
+        d.series.map((r, i) => [r.date, r.placed, r.shipped, r.delivered, ...series.map((s) => rows[i].values[s.key] || 0)])))}
+    <div class="viz-grid">
+      ${vizCard("Backlog by age", "Open orders, by time since placed.", `<div id="ch-aging" class="viz-plot"></div>` +
+        dataTable(["Age", "Orders"], d.aging.map((a) => [a.bucket, a.orders])))}
+      ${vizCard("Warehouse stage times", `Median hours, ${st.orders} orders with warehouse scans.`,
+        `<div id="ch-stages" class="viz-plot"></div><div class="viz-legend">${stageParts.map((p) =>
+          `<span><i class="viz-swatch" style="background:${p.color}"></i>${esc(p.label)} <b>${hrs(p.value)}</b></span>`).join("")}</div>`)}
+    </div>
+    <div class="section-head"><h2>By ship-from location</h2></div>
+    <div class="card">${table(["Ships from", { label: "Shipped", cls: "num" }, { label: "Units", cls: "num" }, { label: "Order to ship", cls: "num" }, { label: "Within 48h", cls: "num" }],
+      d.by_origin.map((o) => `<tr><td><b>${esc(o.origin)}</b></td><td class="num">${num(o.shipped)}</td><td class="num">${num(o.units)}</td>
+        <td class="num">${hrs(o.order_to_ship_hours)}</td><td class="num">${num(o.within_48h_pct, "%")}</td></tr>`), "Nothing shipped in this window.")}</div>
+    <div class="section-head"><h2>Backlog</h2><span class="muted small">oldest first</span></div>
+    <div class="card">${table(["Order", "Ships from", "Status", { label: "Age", cls: "num" }, "Warehouse", "Needed by"],
+      d.backlog.map((b) => `<tr class="click" data-order="${b.id}"><td><b>${esc(b.number)}</b><div class="small muted">${esc(b.customer || "")}</div></td>
+        <td>${esc(b.origin)}</td><td>${esc(b.status.replace("_", " "))}${b.order_type !== "standard" ? ` <span class="chip">${esc(b.order_type)}</span>` : ""}</td>
+        <td class="num ${b.age_hours > 48 ? "t-warn" : ""}">${hrs(b.age_hours)}</td>
+        <td class="small">${b.packed_at ? `packed ${fmtDateTime(b.packed_at)}` : b.picked_at ? `picked ${fmtDateTime(b.picked_at)}` : "-"}</td>
+        <td>${b.required_by ? `${fmtDate(b.required_by)} <span class="small ${b.hours_left < 0 ? "t-urgent" : "muted"}">${rel(b.required_by)}</span>` : "-"}</td></tr>`),
+      "No open orders.")}</div>
+    <div class="section-head"><h2>Recently shipped</h2></div>
+    <div class="card">${table(["Order", "Ships from", "Placed", "Picked", "Packed", "Shipped", "Delivered", { label: "To ship", cls: "num" }, "Handled by"],
+      d.shipped_orders.slice(0, 60).map((o) => `<tr class="click" data-order="${o.id}"><td><b>${esc(o.number)}</b></td><td>${esc(o.origin)}</td>
+        <td>${fmtDateTime(o.placed_at)}</td><td>${fmtDateTime(o.picked_at)}</td><td>${fmtDateTime(o.packed_at)}</td>
+        <td>${fmtDateTime(o.shipped_at)}</td><td>${fmtDateTime(o.delivered_at)}</td><td class="num">${hrs(o.order_to_ship_hours)}</td>
+        <td>${esc(o.handled_by || "")}</td></tr>`), "Nothing shipped in this window.")}</div>`;
+  mountChart($("#ch-shipped", view), (el, w) => drawColumns(el, w, { series, rows }));
+  mountChart($("#ch-aging", view), (el, w) => drawBars(el, w, {
+    items: d.aging.map((a) => ({ label: a.bucket, value: a.orders, unit: "open orders" })) }));
+  mountChart($("#ch-stages", view), (el, w) => drawSegments(el, w, { parts: stageParts, fmt: hrs }));
+  bindTracker(view);
+}
+
+async function renderProductivity(view) {
+  const d = await api(`/trackers/productivity?days=${state.trackDays}`);
+  const k = d.kpis;
+  const clocked = d.stores.filter((s) => s.labor_hours > 0);
+  const people = d.people.filter((p) => Number(p.revenue) > 0).slice(0, 10);
+  view.innerHTML = `${trackerHead("Productivity", [["productivity", "Staff CSV"], ["warehouse-handlers", "Warehouse CSV"]])}
+    <div class="kpis">
+      ${kpi(`Warehouse orders (${d.days}d)`, num(k.warehouse_orders_shipped), `${num(k.warehouse_orders_per_day)} per shipping day · ${num(k.warehouse_units_shipped)} units`)}
+      ${kpi("Pick to ship", hrs(k.warehouse_pick_to_ship_hours), "median, partner 3PL")}
+      ${kpi(`Store sales (${d.days}d)`, money(k.store_revenue), `${num(k.store_labor_hours)} labor hours clocked`)}
+      ${kpi("Sales per labor hour", k.store_revenue_per_labor_hour == null ? "-" : money(k.store_revenue_per_labor_hour), "stores with a time clock")}
+      ${kpi("On the clock now", num(k.staff_on_clock), d.on_clock.map((p) => esc(p.name)).join(", ") || "nobody clocked in")}
+    </div>
+    <div class="section-head"><h2>Warehouse</h2></div>
+    ${vizCard("Partner 3PL orders shipped per day", "", `<div id="ch-wh" class="viz-plot"></div>` +
+      dataTable(["Date", "Picked", "Packed", "Shipped", "Units shipped"], d.warehouse_series.map((r) => [r.date, r.picked, r.packed, r.shipped, r.units_shipped])))}
+    <div class="card">${table(["Handler", { label: "Orders", cls: "num" }, { label: "Units", cls: "num" }, { label: "Days active", cls: "num" }, { label: "Orders / day", cls: "num" }, { label: "Pick to ship", cls: "num" }],
+      d.handlers.map((h) => `<tr><td><b>${esc(h.name)}</b></td><td class="num">${num(h.orders)}</td><td class="num">${num(h.units)}</td>
+        <td class="num">${num(h.days_active)}</td><td class="num">${num(h.orders_per_day)}</td><td class="num">${hrs(h.pick_to_ship_hours)}</td></tr>`),
+      "No warehouse orders shipped in this window.")}</div>
+    <p class="muted small">${esc(d.notes)}</p>
+    <div class="section-head"><h2>Stores</h2></div>
+    <div class="viz-grid">
+      ${vizCard("Sales per labor hour, by store", "Stores with time-clock hours.", `<div id="ch-splh" class="viz-plot"></div>` +
+        dataTable(["Store", "Sales", "Labor hours", "Sales / hour"], clocked.map((s) => [s.location, s.revenue, s.labor_hours, s.revenue_per_labor_hour])))}
+      ${vizCard("Sales by employee", `Top ${people.length}, last ${d.days} days.`, `<div id="ch-people" class="viz-plot"></div>` +
+        dataTable(["Employee", "Location", "Sales", "Units"], people.map((p) => [p.name, p.location, p.revenue, p.units])))}
+    </div>
+    <div class="card">${table(["Employee", "Location", { label: "Sales", cls: "num" }, { label: "Units", cls: "num" }, { label: "Hours", cls: "num" }, { label: "Sales / hour", cls: "num" }, { label: "Units / hour", cls: "num" }],
+      d.people.map((p) => `<tr><td><b>${esc(p.name)}</b><div class="small muted">${esc(p.source)}</div></td><td>${esc(p.location)}</td>
+        <td class="num">${money(p.revenue)}</td><td class="num">${num(p.units)}</td><td class="num">${p.hours ? num(p.hours) : "-"}</td>
+        <td class="num">${p.revenue_per_hour == null ? "-" : money(p.revenue_per_hour)}</td><td class="num">${num(p.units_per_hour)}</td></tr>`),
+      "No store sales in this window.")}</div>
+    <div class="card" style="margin-top:12px">${table(["Store", { label: "Sales", cls: "num" }, { label: "Units", cls: "num" }, { label: "Labor hours", cls: "num" }, { label: "Sales / labor hour", cls: "num" }, { label: "Staff", cls: "num" }],
+      d.stores.map((s) => `<tr><td><b>${esc(s.location)}</b></td><td class="num">${money(s.revenue)}</td><td class="num">${num(s.units)}</td>
+        <td class="num">${s.labor_hours ? num(s.labor_hours) : "-"}</td><td class="num">${s.revenue_per_labor_hour == null ? "-" : money(s.revenue_per_labor_hour)}</td>
+        <td class="num">${num(s.staff)}</td></tr>`), "No store data in this window.")}</div>`;
+  mountChart($("#ch-wh", view), (el, w) => drawColumns(el, w, {
+    series: [{ key: "shipped", label: "Orders shipped", color: SERIES[0] }],
+    rows: d.warehouse_series.map((r) => ({ x: r.date, values: { shipped: r.shipped } })) }));
+  mountChart($("#ch-splh", view), (el, w) => drawBars(el, w, {
+    items: clocked.map((s) => ({ label: s.location, value: s.revenue_per_labor_hour || 0, text: money(s.revenue_per_labor_hour), unit: "per labor hour" })) }));
+  mountChart($("#ch-people", view), (el, w) => drawBars(el, w, {
+    items: people.map((p) => ({ label: p.name, value: Number(p.revenue), text: money(p.revenue), unit: `${p.location}, ${p.units} units` })) }));
+  bindTracker(view);
+}
+
+// While a tracker tab is open (and the page is visible), pull fresh numbers every minute.
+setInterval(() => {
+  const tab = (location.hash || "#overview").slice(1);
+  const busy = !$("#drawer").hidden || !tip.hidden || document.querySelector("details.viz-table[open]");
+  if (TRACKER_TABS.has(tab) && document.visibilityState === "visible" && !busy) render();
+}, 60000);
+
+const VIEWS = { overview: renderOverview, orders: renderOrders, inbound: renderInbound, outbound: renderOutbound,
+  productivity: renderProductivity, inventory: renderInventory, freight: renderFreight, billing: renderBilling,
+  connectors: renderConnectors, setup: renderSetup };
 
 async function refreshHeader() {
   const ov = await api("/overview");

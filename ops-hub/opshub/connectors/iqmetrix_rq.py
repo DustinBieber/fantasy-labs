@@ -27,7 +27,7 @@ class IQMetrixRQConnector(FileImports, Connector):
     key = "iqmetrix_rq"
     name = "iQmetrix RQ"
     category = "pos"
-    capabilities = ("inventory", "sales")
+    capabilities = ("inventory", "sales", "labor")
     settings_keys = ()
     import_folder_key = "RQ_DRIVE_FOLDER_ID"
     import_query_key = "RQ_GMAIL_QUERY"
@@ -61,5 +61,5 @@ class IQMetrixRQConnector(FileImports, Connector):
             batch.sales.append(NSale(external_id=f"{row['InvoiceIDByStore']}:{row.get('LineID', 1)}",
                                      sku=row["ProductSKU"], location=str(row["StoreID"]),
                                      sold_at=parse_iso(row.get("DateCreated")), qty=to_int(row.get("Quantity")),
-                                     net_amount=to_dec(row.get("TotalPrice"))))
+                                     net_amount=to_dec(row.get("TotalPrice")), employee=row.get("SalesPerson") or None))
         return batch

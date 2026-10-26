@@ -63,3 +63,20 @@ def test_basic_auth(client, monkeypatch):
     bad = base64.b64encode(b"ops:nope").decode()
     assert client.get("/api/overview", headers={"Authorization": f"Basic {bad}"}).status_code == 401
     assert client.get("/api/overview", headers={"Authorization": f"Basic {good}"}).status_code == 200
+
+
+def test_read_only_api_key(client, monkeypatch):
+    monkeypatch.setenv("OPSHUB_PASSWORD", "s3cret-pass")
+    assert client.get("/api/overview").status_code == 401
+    auth = {"Authorization": "Basic " + base64.b64encode(b"ops:s3cret-pass").decode()}
+    key = client.post("/api/setup/read-token", headers=auth).json()["token"]
+    bearer = {"Authorization": f"Bearer {key}"}
+    assert client.get("/api/trackers/inbound", headers=bearer).status_code == 200
+    assert client.get("/openapi.json", headers=bearer).status_code == 200
+    assert client.get(f"/api/export/outbound.csv?token={key}").status_code == 200  # Sheets IMPORTDATA style
+    assert client.post("/api/sync", headers=bearer).status_code == 403  # reads only
+    assert client.get("/api/setup", headers=bearer).status_code == 403  # not the settings
+    assert client.get("/api/overview", headers={"Authorization": "Bearer wrong-key-wrong-key"}).status_code == 401
+    assert client.get("/", headers=bearer).status_code == 403  # the dashboard still needs the password
+    newer = client.post("/api/setup/read-token", headers=auth).json()["token"]
+    assert newer != key and client.get("/api/overview", headers=bearer).status_code == 401  # old key replaced

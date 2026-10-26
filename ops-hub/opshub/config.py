@@ -26,6 +26,9 @@ DEFAULT_DEADLINE_KEYS = [
     "event date", "in hands date", "in-hands date",
 ]
 
+# Minutes between syncs for the systems worth polling fast; the rest use SYNC_INTERVAL_MINUTES.
+DEFAULT_SYNC_INTERVALS = {"shopify": 5, "extensiv": 5, "gmail": 5, "lightspeed": 10}
+
 DEFAULT_ALERT_ROUTES = {
     "urgent": ["google_chat", "telegram", "whatsapp"],
     "warn": ["google_chat"],
@@ -73,6 +76,10 @@ class Settings:
     # Background work while the server runs: sync every N minutes (0 = off) and daily jobs at HH:MM.
     scheduler: bool = True
     sync_interval_minutes: int = 15
+    # Per-connector overrides of sync_interval_minutes (SYNC_INTERVALS, JSON), and how often the calendar
+    # and Sheets report tabs are republished after syncs.
+    sync_intervals: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_SYNC_INTERVALS))
+    reports_interval_minutes: int = 15
     digest_time: str = "07:00"
     muse_export_time: str = "06:00"
     backup_time: str = "02:30"
@@ -95,6 +102,9 @@ class Settings:
     ai_providers: list[str] = field(default_factory=lambda: ["claude", "gemini", "openai"])
     alert_routes: dict[str, list[str]] = field(default_factory=lambda: dict(DEFAULT_ALERT_ROUTES))
 
+    def interval_for(self, key: str) -> int:
+        return int(self.sync_intervals.get(key, self.sync_interval_minutes))
+
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
         e = os.environ if env is None else env
@@ -106,12 +116,15 @@ class Settings:
         routes = d.alert_routes
         if e.get("ALERT_ROUTES"):
             routes = json.loads(e["ALERT_ROUTES"])
+        intervals = {**d.sync_intervals, **json.loads(e.get("SYNC_INTERVALS") or "{}")}
         return cls(
             database_url=e.get("DATABASE_URL") or d.database_url,
             demo_mode=_bool(e.get("DEMO_MODE"), d.demo_mode),
             timezone=e.get("BUSINESS_TIMEZONE") or d.timezone,
             scheduler=_bool(e.get("OPSHUB_SCHEDULER"), d.scheduler),
             sync_interval_minutes=i("SYNC_INTERVAL_MINUTES", d.sync_interval_minutes),
+            sync_intervals={k: int(v) for k, v in intervals.items()},
+            reports_interval_minutes=i("REPORTS_INTERVAL_MINUTES", d.reports_interval_minutes),
             digest_time=e.get("DIGEST_TIME") or d.digest_time,
             muse_export_time=e.get("MUSE_EXPORT_TIME") or d.muse_export_time,
             backup_time=e.get("BACKUP_TIME") or d.backup_time,

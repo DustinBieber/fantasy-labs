@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..connectors.base import SyncBatch
-from ..models import (Carrier, InventoryLot, Location, Order, OrderLine, Product, RateCardEntry, SaleLine, SkuAlias,
-                      StandingOrder, StockLevel, StockSnapshot, WarehouseActivity)
+from ..models import (Carrier, InventoryLot, LaborShift, Location, Order, OrderLine, Product, RateCardEntry, Receipt,
+                      SaleLine, SkuAlias, StandingOrder, StockLevel, StockSnapshot, WarehouseActivity)
 from ..timeutil import utcnow
 from . import billing, documents, shipments
 
@@ -140,6 +140,8 @@ def apply_batch(session: Session, batch: SyncBatch, source: str, settings: Setti
     _apply_lots(session, batch, source, r, now, stats)
     _apply_sales(session, batch, source, r, stats)
     _apply_orders(session, batch, source, r, now, stats)
+    _apply_receipts(session, batch, source, r, now, stats)
+    _apply_labor(session, batch, source, r, stats)
 
     for n in batch.shipments:
         _, created = shipments.upsert_shipment(session, n, source, authoritative, r.location)
@@ -254,6 +256,7 @@ def _apply_sales(session, batch, source, r: Resolver, stats) -> None:
             existing[n.external_id] = s
             stats["sales_created"] += 1
         s.product_id, s.location_id, s.sold_at, s.qty, s.net_amount = p.id, loc.id, n.sold_at, n.qty, n.net_amount
+        s.employee = n.employee or s.employee
     session.flush()
 
 
@@ -285,6 +288,10 @@ def _apply_orders(session, batch, source, r: Resolver, now, stats) -> None:
         o.status, o.raw_status, o.placed_at, o.source_updated_at = n.status, n.raw_status, n.placed_at, n.updated_at
         o.notes, o.tags, o.attributes, o.system_deadline = n.notes, n.tags, n.attributes, n.required_by
         o.shipped_at = n.shipped_at or o.shipped_at
+        o.picked_at = n.picked_at or o.picked_at
+        o.packed_at = n.packed_at or o.packed_at
+        o.delivered_at = n.delivered_at or o.delivered_at
+        o.handled_by = n.handled_by or o.handled_by
         o.order_type = n.order_type or "standard"
         loc = r.location(n.ship_from)
         o.ship_from_location_id = loc.id if loc else None
@@ -294,4 +301,37 @@ def _apply_orders(session, batch, source, r: Resolver, now, stats) -> None:
             p = r.product(l.sku, l.title) if l.sku else None
             o.lines.append(OrderLine(product_id=p.id if p else None, sku=l.sku, title=l.title, qty=l.qty,
                                      qty_fulfilled=l.qty_fulfilled))
+    session.flush()
+
+
+def _apply_receipts(session, batch, source, r: Resolver, now, stats) -> None:
+    for n in batch.receipts:
+        rc = session.scalar(select(Receipt).where(Receipt.source == source, Receipt.external_id == n.external_id))
+        if rc is None:
+            rc = Receipt(source=source, external_id=n.external_id)
+            session.add(rc)
+            stats["receipts_created"] += 1
+        loc = r.location(n.location)
+        rc.kind, rc.reference, rc.vendor, rc.status = n.kind, n.reference, n.vendor, n.status
+        rc.location_id = loc.id if loc else None
+        rc.expected_at, rc.arrived_at, rc.received_at = n.expected_at, n.arrived_at, n.received_at
+        rc.pallets, rc.notes, rc.updated_at = n.pallets, n.notes, now
+        rc.lines = [{"sku": l.sku, "expected": l.expected, "received": l.received} for l in n.lines]
+        rc.units_expected = sum(l.expected for l in n.lines)
+        rc.units_received = sum(l.received for l in n.lines)
+        for l in n.lines:
+            r.product(l.sku)
+    session.flush()
+
+
+def _apply_labor(session, batch, source, r: Resolver, stats) -> None:
+    for n in batch.labor:
+        sh = session.scalar(select(LaborShift).where(LaborShift.source == source, LaborShift.external_id == n.external_id))
+        if sh is None:
+            sh = LaborShift(source=source, external_id=n.external_id, employee=n.employee, clock_in=n.clock_in)
+            session.add(sh)
+            stats["labor_shifts"] += 1
+        loc = r.location(n.location)
+        sh.employee, sh.clock_in, sh.clock_out = n.employee, n.clock_in, n.clock_out
+        sh.location_id = loc.id if loc else None
     session.flush()

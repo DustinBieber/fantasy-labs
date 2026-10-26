@@ -46,6 +46,8 @@ def _run_connector(session: Session, key: str, settings: Settings, env: dict[str
                     session.flush()
                     stats["hazmat_activity"] = billing.derive_hazmat_activity(session, conn.vendor,
                                                                               codes["hazmat_order"])
+            if batch.warnings:
+                stats["warnings"] = batch.warnings
             stats["orders_linked"] = orders.link_orders(session)
             session.flush()
             stats.update({f"signals_{k}": v for k, v in orders.refresh_signals(session, settings, env=env).items()})

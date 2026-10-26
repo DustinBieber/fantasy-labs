@@ -39,9 +39,22 @@ Two files, named by the local date:
   "standing_orders": [{"code": "SO-GVG", "customer": "...", "next_due": "2026-10-28", "lines": [...],
                        "min_days_to_best_by": 90}],
   "billing": [{"invoice": "INV-2026-09-114", "vendor": "Riverside 3PL", "billed": "2371.20",
-               "expected": "1848.70", "overbilled": "522.50", "issues": 6}]
+               "expected": "1848.70", "overbilled": "522.50", "issues": 6}],
+  "trackers": {
+    "days": 7,
+    "inbound": {"kpis": {"open_receipts": 5, "late_receipts": 2, "units_due_7d": 1338, "received_units": 812, "...": "..."},
+                "open_receipts": [{"reference": "PO 7795", "location": "P3PL-01", "expected_at": "...", "late": true,
+                                   "days_late": 2, "units_expected": 144}]},
+    "outbound": {"kpis": {"shipped": 59, "backlog": 12, "order_to_ship_hours": 16.2, "within_48h_pct": 100.0, "...": "..."},
+                 "stages": {"order_to_pick_hours": 13.4, "pick_to_pack_hours": 1.3, "pack_to_ship_hours": 4.0},
+                 "by_origin": [...], "aging": [...]},
+    "productivity": {"kpis": {...}, "warehouse_handlers": [...], "stores": [...], "people": [...]}
+  }
 }
 ```
+
+Muse can also read any of this live between handoffs with the read-only API key (README, *Polling and
+API access*), e.g. `GET /api/trackers/outbound?days=7`.
 
 ## What Muse can send back
 

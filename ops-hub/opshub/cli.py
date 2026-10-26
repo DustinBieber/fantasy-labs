@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("connectors")
     sub.add_parser("digest")
     sub.add_parser("init-db")
+    sub.add_parser("read-token", help="create a new read-only API key (replaces the old one)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -69,6 +70,19 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.cmd == "init-db":
         print(f"Tables ready in {settings.database_url}")
+        return
+    if args.cmd == "read-token":
+        import secrets
+
+        from . import settings_store
+
+        if settings_store.from_env("OPSHUB_READ_TOKEN"):
+            print("OPSHUB_READ_TOKEN is set in .env; change it there.")
+            return
+        token = secrets.token_urlsafe(32)
+        settings_store.save({"OPSHUB_READ_TOKEN": token})
+        print(f"Read-only API key (shown once):\n{token}\n\n"
+              f'Use it as "Authorization: Bearer <key>" on GET /api/... or ?token=<key> on CSV export URLs.')
         return
     if args.cmd == "backup":
         from .services.backup import backup

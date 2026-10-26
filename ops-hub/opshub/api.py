@@ -26,7 +26,7 @@ from .connectors import all_connectors, get_connector
 from .connectors.base import NotWiredYet, NTrackingUpdate
 from .models import (ACTIVE_ORDER_STATUSES, OPEN_SHIPMENT_STATUSES, Alert, HandoffFile, InboxItem, Invoice,
                      KeyValue, Notification, Order, RateCardEntry, Shipment, SyncRun)
-from .services import billing, calendar, chatops, inventory, jobs, notify, orders, shipments, sync
+from .services import billing, calendar, chatops, inventory, jobs, notify, orders, shipments, sync, trackers
 from .timeutil import end_of_day_utc, iso, parse_date, parse_iso, utcnow
 
 log = logging.getLogger(__name__)
@@ -91,14 +91,28 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def basic_auth(request: Request, call_next):
-        """When OPSHUB_PASSWORD is set, every page and API call needs HTTP Basic auth."""
-        password = os.environ.get("OPSHUB_PASSWORD")
+        """When OPSHUB_PASSWORD is set, every page and API call needs HTTP Basic auth, except reads made with
+        the read-only API key (OPSHUB_READ_TOKEN) as a Bearer token or ?token= on /api URLs."""
+        path = request.url.path
         # Webhooks authenticate with the sender's signature instead.
         # The phone's home-screen install fetches the manifest and icons without credentials.
-        open_paths = ("/webhooks/", "/static/pwa/")
-        if password and request.url.path != "/healthz" and not request.url.path.startswith(open_paths):
+        if path == "/healthz" or path.startswith(("/webhooks/", "/static/pwa/")):
+            return await call_next(request)
+        header = request.headers.get("authorization", "")
+        key = header[7:].strip() if header.lower().startswith("bearer ") else (
+            request.query_params.get("token") if path.startswith("/api/") else None)
+        if key:
+            expected = settings_store.effective_env().get("OPSHUB_READ_TOKEN") or ""
+            if len(expected) < 16 or not secrets.compare_digest(key, expected):
+                return Response(status_code=401, content="Unknown API key")
+            readable = request.method in ("GET", "HEAD") and (
+                path == "/openapi.json" or (path.startswith("/api/") and not path.startswith("/api/setup")))
+            if not readable:
+                return Response(status_code=403, content="The read-only API key can only read /api data")
+            return await call_next(request)
+        password = os.environ.get("OPSHUB_PASSWORD")
+        if password:
             user = os.environ.get("OPSHUB_USER", "ops")
-            header = request.headers.get("authorization", "")
             ok = False
             if header.lower().startswith("basic "):
                 try:
@@ -413,6 +427,7 @@ def router_api():
             run = session.scalar(select(SyncRun).where(SyncRun.connector == c.key).order_by(SyncRun.id.desc()))
             d["last_run"] = None if run is None else {"status": run.status, "mode": run.mode, "stats": run.stats,
                                                       "error": run.error, "finished_at": iso(run.finished_at)}
+            d["interval_minutes"] = s.interval_for(c.key) if c.pulls and s.scheduler else None
             out.append(d)
         return out
 
@@ -458,11 +473,20 @@ def router_api():
     def calendar_publish(session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
         return jobs.run_job(session, "calendar", s)
 
+    # inbound / outbound / productivity trackers
+
+    @r.get("/trackers/{name}")
+    def tracker(name: str, days: int = 30, session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
+        if name not in trackers.TRACKERS:
+            _404("tracker")
+        return trackers.TRACKERS[name](session, s, days=max(1, min(days, 365)))
+
     # exports (CSV, e.g. for a Google Sheets import)
 
     @r.get("/export/{name}.csv")
-    def export(name: str, session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
+    def export(name: str, days: int = 30, session: Session = Depends(db.get_db), s: Settings = Depends(settings_dep)):
         now = utcnow()
+        days = max(1, min(days, 365))
         if name == "stock":
             m = inventory.stock_matrix(session)
             codes = [l["code"] for l in m["locations"]]
@@ -487,6 +511,31 @@ def router_api():
             header = ["reference", "direction", "mode", "status", "carrier", "agent", "tracking_ref", "eta",
                       "hazmat", "last_event_at", "stale", "late"]
             rows = [[x[k] for k in header] for x in data]
+        elif name == "inbound":
+            data = trackers.inbound(session, s, now, days)
+            header = ["status", "reference", "kind", "source", "vendor", "location", "expected_at", "arrived_at",
+                      "received_at", "units_expected", "units_received", "short_units", "pallets", "late", "days_late",
+                      "dock_to_stock_hours"]
+            rows = [[x[k] for k in header] for x in data["open"] + data["received"]]
+        elif name == "outbound":
+            data = trackers.outbound(session, s, now, days)
+            header = ["number", "customer", "origin", "status", "placed_at", "picked_at", "packed_at", "shipped_at",
+                      "delivered_at", "order_to_ship_hours", "handled_by", "units"]
+            rows = [[x[k] for k in header] for x in data["shipped_orders"]]
+        elif name == "backlog":
+            data = trackers.outbound(session, s, now, days)
+            header = ["number", "customer", "origin", "status", "order_type", "placed_at", "age_hours", "picked_at",
+                      "packed_at", "required_by", "hours_left", "units"]
+            rows = [[x[k] for k in header] for x in data["backlog"]]
+        elif name == "productivity":
+            data = trackers.productivity(session, s, now, days)
+            header = ["name", "location", "source", "revenue", "units", "lines", "hours", "shifts", "revenue_per_hour",
+                      "units_per_hour"]
+            rows = [[x[k] for k in header] for x in data["people"]]
+        elif name == "warehouse-handlers":
+            data = trackers.productivity(session, s, now, days)
+            header = ["name", "orders", "units", "days_active", "orders_per_day", "pick_to_ship_hours"]
+            rows = [[x[k] for k in header] for x in data["handlers"]]
         else:
             _404("export")
         buf = io.StringIO()
@@ -588,6 +637,14 @@ def router_setup():
                                             f"{exc.response.text[:300]}"}
         except Exception as exc:
             return {"ok": False, "message": f"{type(exc).__name__}: {str(exc)[:300]}"}
+
+    @r.post("/api/setup/read-token")
+    def new_read_token():
+        if settings_store.from_env("OPSHUB_READ_TOKEN"):
+            _400("OPSHUB_READ_TOKEN is set in .env; change it there")
+        token = _secrets.token_urlsafe(32)
+        settings_store.save({"OPSHUB_READ_TOKEN": token})
+        return {"token": token}
 
     @r.get("/setup/google/start")
     def google_start(request: Request):
