@@ -2,7 +2,7 @@
 
 | Device | Its job |
 | --- | --- |
-| **Mac mini** | The server. Runs Ops Hub around the clock: syncing every 15 minutes, sending alerts, answering the Telegram bot, the 6:00 a.m. Muse handoff, nightly backups. Stays plugged in and awake. |
+| **Mac mini** | The server. Runs Ops Hub around the clock: syncing every 5 to 15 minutes, sending alerts, answering the Telegram bot, the 6:00 a.m. Muse handoff, nightly backups. Stays plugged in and awake. |
 | **MacBook Air** | Where you set things up and do desk work: the dashboard, invoice audits, the pick planner, Screen Sharing into the Mac mini, dropping export files into Drive. |
 | **S24 Ultra** | Alerts (Telegram / WhatsApp / Google Chat), the dashboard as a home-screen app, asking the bot ("order #2041"), and passing on carrier updates. |
 
@@ -41,8 +41,8 @@ From here on you can do everything from the MacBook Air. In Finder → **Network
 In Terminal on the Mac mini:
 
 ```bash
-gh auth login                          # GitHub: choose "Login with a web browser"
-cd ~ && gh repo clone DustinBieber/fantasy-labs -- -b ccr-a698dc74-4nq2oa
+gh auth login                          # GitHub.com, HTTPS, Yes to "Authenticate Git", then "Login with a web browser"
+cd ~ && gh repo clone DustinBieber/fantasy-labs
 cd ~/fantasy-labs/ops-hub && ./run/setup-mac.sh
 ```
 
@@ -52,7 +52,10 @@ cd ~/fantasy-labs/ops-hub && ./run/setup-mac.sh
 2. Asks for your Mac login password once.
 3. Installs Ops Hub as a service that starts with the Mac and is reachable from the MacBook and
    phone. The first run takes a minute or two.
-4. Opens **http://localhost:8000/#setup**. Log in as `ops` with the dashboard password.
+4. Installs the nightly auto-update: at 3:15 a.m. the Mac mini pulls the latest version from GitHub
+   (`main`) and restarts. If the new version doesn't start, it goes back to the previous one by itself.
+   Log: `logs/update.log`.
+5. Opens **http://localhost:8000/#setup**. Log in as `ops` with the dashboard password.
 
 If macOS asks whether *python* may accept incoming connections, click **Allow**. You'll see sample
 data until your systems are connected.
@@ -150,9 +153,12 @@ Funnel in the Tailscale admin page if asked. It prints an address like
 
 | When | What |
 | --- | --- |
-| Every 15 min | Sync, check rules, send new alerts |
+| Every 5 min | Sync Shopify, Extensiv and Gmail, check rules, send new alerts |
+| Every 10 min | Sync Lightspeed |
+| Every 15 min | Sync everything else, republish the calendar and the Sheets report tabs |
 | Every ~20 s | Answer the Telegram bot |
 | 2:30 a.m. | Database backup |
+| 3:15 a.m. | Update from GitHub (`main`) and restart, only if there's a new version |
 | 6:00 a.m. | Muse brief and data file |
 | 7:00 a.m. | Daily digest |
 
@@ -160,11 +166,12 @@ Funnel in the Tailscale admin page if asked. It prints an address like
 
 ```bash
 cd ~/fantasy-labs/ops-hub
-./run/update-mac.sh                                   # get the latest version and restart
+./run/update-mac.sh                                   # update right now instead of waiting for 3:15 a.m.
+tail -n 20 logs/update.log                            # what the nightly update did
 tail -f logs/opshub.log                               # watch what it's doing (Ctrl+C to stop)
 sudo launchctl kickstart -k system/com.opshub.server  # restart
 .venv/bin/python -m opshub backup                     # back up right now
-sudo ./run/install-mac-service.sh uninstall           # stop and remove the service
+sudo ./run/install-mac-service.sh uninstall           # stop and remove the service and the auto-update
 ```
 
 **Backups**: the last 14 nightly copies are in `~/fantasy-labs/ops-hub/backups`. Turn on Time

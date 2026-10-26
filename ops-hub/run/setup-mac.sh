@@ -1,6 +1,7 @@
 #!/bin/bash
 # One-time setup on the Mac mini: choose the dashboard password, install the background service
-# (starts at boot, reachable from your MacBook and phone), then open the Setup page.
+# (starts at boot, reachable from your MacBook and phone) and the nightly auto-update, then open the
+# Setup page.
 #   ./run/setup-mac.sh
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -24,6 +25,7 @@ PY
 fi
 echo "Installing the background service (macOS asks for your Mac login password)..."
 sudo OPSHUB_HOST=0.0.0.0 ./run/install-mac-service.sh --boot
+sudo ./run/install-mac-service.sh --auto-update
 printf "Starting"
 for _ in $(seq 1 90); do curl -sf http://localhost:8000/healthz >/dev/null && break; printf "."; sleep 1; done; echo
 if curl -sf http://localhost:8000/healthz >/dev/null; then
