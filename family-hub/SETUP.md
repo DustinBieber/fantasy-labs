@@ -35,14 +35,13 @@ permanent `https://` address for free. Nothing needs to be installed on the S24.
 3. Tailscale menu → **Settings** → turn on **Launch at login** (or "Run at login").
 
 ### 1.3 Download Family Hub
-1. On the Mac mini, open Safari and go to **https://github.com/dustinbieber/fantasy-labs**, signed in to GitHub.
-2. Click the green **Code** button → **Download ZIP**.
-3. Open **Terminal** (Spotlight: ⌘ Space, type *Terminal*) and paste:
-   ```bash
-   cd ~ && unzip -q ~/Downloads/fantasy-labs-main.zip && mv fantasy-labs-main fantasy-labs
-   ```
-   If you prefer git, use `git clone https://github.com/dustinbieber/fantasy-labs.git ~/fantasy-labs` instead.
-   macOS may offer to install "command line developer tools" first; click Install.
+Open **Terminal** (Spotlight: ⌘ Space, type *Terminal*) and paste this line. It downloads the code straight from
+GitHub; no browser or GitHub sign-in is needed:
+```bash
+cd ~ && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip
+```
+If it says `fantasy-labs` already exists, an earlier download is in the way; run `rm -rf ~/fantasy-labs` and paste the
+line again. Your hub's data lives in `~/FamilyHub`, not here, so this is safe.
 
 ### 1.4 Run the installer
 In Terminal:
@@ -227,7 +226,10 @@ Mac mini and run `bash ~/fantasy-labs/family-hub/mac/setup.sh` again.
 | Connections | 🔌 page: everything you set up is green; anything yellow shows the error. |
 
 ## Day to day
-- **Update the hub:** download the new ZIP (or `git -C ~/fantasy-labs pull`), then run `bash ~/fantasy-labs/family-hub/mac/setup.sh`.
+- **Update the hub:** paste this in Terminal (it replaces the downloaded code; your data in `~/FamilyHub` is untouched):
+  ```bash
+  cd ~ && rm -rf fantasy-labs && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip && bash ~/fantasy-labs/family-hub/mac/setup.sh
+  ```
 - **Logs:** `~/FamilyHub/logs/server.log` on the Mac mini.
 - **Backups:** `~/FamilyHub/backups` keeps a copy from each of the last 14 days. Also back up `~/FamilyHub/family-hub.env`
   (it holds the encryption key).
