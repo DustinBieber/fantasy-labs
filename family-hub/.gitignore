@@ -1,0 +1,7 @@
+*.db
+*.db-journal
+.family_hub_secret
+.env
+__pycache__/
+.pytest_cache/
+.venv/

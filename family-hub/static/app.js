@@ -1,0 +1,1352 @@
+"use strict";
+/* Family Hub web app: a dependency-free single-page app over the /api endpoints. */
+
+// ------------------------------------------------------------------ state & helpers
+
+const S = {
+  token: localStore("fh_token"),
+  joinCode: localStore("fh_join"),
+  me: null, family: null, members: [], unread: 0,
+  choreDay: ymd(new Date()),
+  month: ymd(new Date()).slice(0, 7),
+  authMode: "parent", pickedKid: null, kidList: null,
+  map: null, watchId: null, lastSent: null,
+};
+
+function localStore(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+  } catch { return null; }
+}
+
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = (c) => (c < 0 ? "−" : "") + "$" + (Math.abs(c) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const isParent = () => S.me?.role === "parent";
+const member = (id) => S.members.find((m) => m.id === id);
+const nameOf = (id) => member(id)?.name ?? "Everyone";
+
+function ymd(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function parseYmd(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+function addDays(s, n) { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); }
+function dayLabel(s) {
+  const today = ymd(new Date());
+  if (s === today) return "Today";
+  if (s === addDays(today, 1)) return "Tomorrow";
+  if (s === addDays(today, -1)) return "Yesterday";
+  return parseYmd(s).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+function eventDay(e) { return e.all_day ? e.start.slice(0, 10) : ymd(new Date(e.start)); }
+function eventTime(e) {
+  if (e.all_day) return "All day";
+  return new Date(e.start).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+function ago(iso) {
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+function avatar(m, size) {
+  if (!m) return `<span class="avatar" style="background:#888">👪</span>`;
+  const st = size ? `width:${size}px;height:${size}px;` : "";
+  return `<span class="avatar" style="${st}background:${esc(m.color)}" title="${esc(m.name)}">${esc(m.name[0] ?? "?")}</span>`;
+}
+function memberOptions(selected, { all = false, kidsOnly = false, none = "" } = {}) {
+  const list = S.members.filter((m) => !kidsOnly || m.role === "child");
+  return (none ? `<option value="">${esc(none)}</option>` : "") +
+    (all ? `<option value="">Everyone</option>` : "") +
+    list.map((m) => `<option value="${m.id}" ${m.id === selected ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+}
+
+function toast(msg) {
+  document.querySelector(".toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.append(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (S.token) opts.headers.Authorization = `Bearer ${S.token}`;
+  if (body instanceof FormData) opts.body = body;
+  else if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const resp = await fetch(path, opts);
+  if (resp.status === 401 && S.token) { signOut(false); throw new Error("Please sign in again"); }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const d = data.detail;
+    throw new Error(Array.isArray(d) ? d.map((x) => `${x.loc?.slice(-1)[0]}: ${x.msg}`).join("; ") : d || resp.statusText);
+  }
+  return data;
+}
+
+function formData(form) {
+  const out = {};
+  for (const el of form.elements) {
+    if (!el.name || el.disabled) continue;
+    if (el.type === "checkbox") {
+      if (el.dataset.group) { (out[el.dataset.group] ??= []); if (el.checked) out[el.dataset.group].push(isNaN(el.value) ? el.value : Number(el.value)); }
+      else out[el.name] = el.checked;
+    } else if (el.type === "number") out[el.name] = el.value === "" ? null : Number(el.value);
+    else if (el.type === "file") out[el.name] = el.files[0];
+    else out[el.name] = el.value.trim();
+  }
+  return out;
+}
+const toCents = (v) => Math.round(parseFloat(v || "0") * 100);
+const intOrNull = (v) => (v === "" || v == null ? null : Number(v));
+
+// ------------------------------------------------------------------ navigation
+
+const NAV = [
+  { id: "today", label: "Today", ico: "🏠", tab: true },
+  { id: "chores", label: "Chores", ico: "🧹", tab: true },
+  { id: "rewards", label: "Rewards", ico: "🎁" },
+  { id: "calendar", label: "Calendar", ico: "📅", tab: true },
+  { id: "homework", label: "Homework", ico: "📚" },
+  { id: "milestones", label: "Milestones", ico: "⭐" },
+  { id: "money", label: "Money", ico: "💵" },
+  { id: "health", label: "Health", ico: "🩺" },
+  { id: "map", label: "Map", ico: "📍", tab: true },
+  { id: "home", label: "Doors", ico: "🔐", parent: true },
+  { id: "connections", label: "Connections", ico: "🔌", parent: true },
+  { id: "alerts", label: "Alerts", ico: "🔔" },
+  { id: "settings", label: "Settings", ico: "⚙️" },
+  { id: "more", label: "More", ico: "☰", tab: true, mobileOnly: true },
+];
+
+function currentView() {
+  const v = location.hash.replace(/^#/, "").split(/[?/]/)[0] || "today";
+  const item = NAV.find((n) => n.id === v);
+  if (!item || (item.parent && !isParent())) return "today";
+  return v;
+}
+
+function shell(content) {
+  const v = currentView();
+  const visible = NAV.filter((n) => !n.parent || isParent());
+  const badge = (id) => (id === "alerts" && S.unread ? `<span class="badge">${S.unread}</span>` : "");
+  return `<div class="app">
+    <aside class="side">
+      <div class="brand">Family <span>Hub</span></div>
+      <nav class="nav">${visible.filter((n) => !n.mobileOnly).map((n) =>
+        `<a href="#${n.id}" class="${n.id === v ? "on" : ""}"><span>${n.ico}</span>${n.label}${badge(n.id)}</a>`).join("")}</nav>
+      <div style="padding:16px 12px" class="small muted">${esc(S.me.name)} · ${esc(S.family.name)}<br>
+        <a href="#" data-act="signOut">Sign out</a></div>
+    </aside>
+    <main id="view">${content}</main>
+    <nav class="tabbar">${visible.filter((n) => n.tab).map((n) => {
+      const on = n.id === v || (n.id === "more" && !NAV.find((x) => x.id === v)?.tab);
+      const more = n.id === "more" && S.unread ? `<span class="badge">${S.unread}</span>` : "";
+      return `<a href="#${n.id}" class="${on ? "on" : ""}"><span class="ico">${n.ico}</span>${n.label}${more}</a>`;
+    }).join("")}</nav>
+  </div>`;
+}
+
+let renderSeq = 0;
+
+async function render() {
+  if (!S.token) { $("#root").innerHTML = authView(); return; }
+  const seq = ++renderSeq;  // a slower, older render must not overwrite a newer screen
+  try {
+    if (!S.me) await loadSession();
+    const v = currentView();
+    const html = await VIEWS[v]();
+    if (seq !== renderSeq) return;
+    $("#root").innerHTML = shell(html);
+    MOUNT[v]?.();
+    const sub = location.hash.split("/")[1];
+    const target = sub && document.getElementById(`conn-${sub.split("?")[0]}`);
+    if (target) target.scrollIntoView(); else window.scrollTo({ top: 0 });
+  } catch (err) {
+    if (seq !== renderSeq) return;
+    if (!S.token) { $("#root").innerHTML = authView(); return; }
+    $("#root").innerHTML = shell(`<div class="banner critical">${esc(err.message)}</div>`);
+  }
+}
+
+async function refresh() {
+  // Re-render the current view without jumping to the top.
+  const y = window.scrollY;
+  await render();
+  window.scrollTo({ top: y });
+}
+
+async function loadSession() {
+  const me = await api("GET", "/api/auth/me");
+  S.me = me.member; S.family = me.family;
+  S.members = await api("GET", "/api/members");
+  S.unread = (await api("GET", "/api/alerts?unread_only=true")).length;
+  if (localStore("fh_share") === "1") startSharing(false);
+}
+
+function signOut(callServer = true) {
+  if (callServer && S.token) api("POST", "/api/auth/logout").catch(() => {});
+  stopSharing();
+  S.token = null; S.me = null;
+  localStore("fh_token", null);
+  location.hash = "";
+  render();
+}
+
+// ------------------------------------------------------------------ auth screens
+
+function authView() {
+  const m = S.authMode;
+  const seg = (id, label) => `<button class="${m === id ? "on" : ""}" data-act="authMode" data-mode="${id}">${label}</button>`;
+  let body = "";
+  if (m === "parent") {
+    body = `<form class="stack" data-form="login">
+      <label>Email<input name="email" type="email" autocomplete="email" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary">Sign in</button></form>`;
+  } else if (m === "kid") {
+    if (!S.kidList) {
+      body = `<form class="stack" data-form="joinCode">
+        <label>Family code<input name="code" value="${esc(S.joinCode || "")}" placeholder="From a parent's Settings page" required autocapitalize="characters"></label>
+        <button class="primary">Continue</button></form>`;
+    } else {
+      body = `<p class="muted">${esc(S.kidList.family_name)} — who's signing in?</p>
+        <div class="kidpick">${S.kidList.members.map((k) => `<button data-act="pickKid" data-id="${k.id}" class="${S.pickedKid === k.id ? "on" : ""}">
+          ${avatar(k)}<span>${esc(k.name)}</span></button>`).join("") || `<p class="muted">No one has a PIN yet. Ask a parent to add you.</p>`}</div>
+        ${S.pickedKid ? `<form class="stack" data-form="pinLogin" style="margin-top:14px">
+          <label>PIN<input name="pin" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="8" required autofocus></label>
+          <button class="primary">Sign in</button></form>` : ""}
+        <p><a href="#" data-act="forgetFamily" class="small">Use a different family code</a></p>`;
+    }
+  } else {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    body = `<form class="stack" data-form="signup">
+      <label>Family name<input name="family_name" placeholder="The Rivera Family" required></label>
+      <label>Your name<input name="parent_name" required></label>
+      <label>Email<input name="email" type="email" autocomplete="email" required></label>
+      <label>Password<input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <input type="hidden" name="timezone" value="${esc(tz)}">
+      <button class="primary">Create family</button>
+      <p class="small muted">Time zone: ${esc(tz)}. You can add kids and another parent next.</p></form>`;
+  }
+  return `<div class="auth"><div class="brand">Family <span style="color:var(--brand)">Hub</span></div>
+    <p class="muted" style="text-align:center">Chores, rewards, calendar, homework, money, health and home — together.</p>
+    <div class="seg">${seg("parent", "Parent")}${seg("kid", "Kid")}${seg("signup", "New family")}</div>
+    <div class="card">${body}</div></div>`;
+}
+
+async function afterAuth(res) {
+  S.token = res.token;
+  localStore("fh_token", res.token);
+  S.me = null;
+  location.hash = "#today";
+  await render();
+}
+
+// ------------------------------------------------------------------ views
+
+const VIEWS = {};
+const MOUNT = {};
+
+VIEWS.today = async () => {
+  const d = await api("GET", "/api/dashboard");
+  S.unread = d.unread_alerts;
+  const hour = new Date().getHours();
+  const hello = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const today = ymd(new Date());
+  const crit = d.critical_alerts.map((a) => `<div class="banner critical">🚨 ${esc(a.title)}</div>`).join("");
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const waiting = isParent() ? [
+    d.pending_approvals && `<a href="#chores">✅ ${plural(d.pending_approvals, "chore")} to approve</a>`,
+    d.pending_rewards && `<a href="#rewards">🎁 ${plural(d.pending_rewards, "reward request")}</a>`,
+  ].filter(Boolean) : [];
+  const pending = waiting.length ? `<div class="banner info">Waiting for you: ${waiting.join(" · ")}</div>` : "";
+  const locks = isParent() && d.locks.length ? `<h2>Doors</h2><div class="grid">${d.locks.map(lockCard).join("")}</div>` : "";
+  const fam = isParent() ? `<h2>Family</h2><div class="grid">${d.members.map((m) => `<div class="card row">${avatar(m)}
+      <div class="grow"><div class="title">${esc(m.name)}</div><div class="small muted">${m.role === "child" ? `⭐ ${m.points} pts · ${money(m.wallet_cents)}` : "Parent"}</div></div></div>`).join("")}</div>` : "";
+  const evs = d.events.map((e) => `<div class="item"><div style="width:72px" class="small muted">${eventDay(e) === today ? "" : "Tmrw "}${eventTime(e)}</div>
+      <div class="grow"><div class="title">${esc(e.title)}</div>${e.location ? `<div class="small muted">${esc(e.location)}</div>` : ""}</div>
+      ${e.member_ids.map((id) => avatar(member(id), 26)).join("")}</div>`).join("");
+  return `<div class="top"><div class="grow"><h1>${hello}, ${esc(S.me.name)}</h1>
+      <div class="muted">${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</div></div>
+      ${!isParent() ? `<span class="chip brand">⭐ ${d.me.points} points</span><span class="chip">${money(d.me.wallet_cents)}</span>` : ""}</div>
+    ${crit}${pending}
+    ${isParent() && d.connections && (d.connections.connected < d.connections.total) ? `<a href="#connections" class="banner info row" style="text-decoration:none">
+      <span class="grow">🔌 ${d.connections.connected} of ${d.connections.total} connections set up${d.connections.attention ? ` · ${d.connections.attention} need attention` : ""}</span><strong>Finish →</strong></a>` : ""}
+    ${["default", "granted", "needs-install"].includes(pushState()) && !localStore("fh_push_nag") ? `<div class="banner info row"><span class="grow">🔔 Get alerts on this phone for free.</span>
+      <a href="#settings">Set up</a><button class="small ghost" data-act="dismissPushNag" aria-label="Dismiss">✕</button></div>` : ""}
+    <h2>Today's chores</h2>${choreList(d.chores, "No chores today 🎉")}
+    <h2>Coming up</h2><div class="list">${evs || `<div class="empty">Nothing on the calendar today or tomorrow.</div>`}</div>
+    ${d.meds.length ? `<h2>Medicine today</h2>${medList(d.meds)}` : ""}
+    <h2>Homework due soon</h2>${homeworkList(d.homework)}
+    ${locks}${fam}`;
+};
+
+function choreList(items, emptyMsg) {
+  if (!items.length) return `<div class="list"><div class="empty">${emptyMsg}</div></div>`;
+  return `<div class="list">${items.map((i) => {
+    const icon = { approved: "✓", submitted: "…", rejected: "↺" }[i.status] || "";
+    const cls = { approved: "on", submitted: "wait" }[i.status] || "";
+    const mine = isParent() || i.assignee_id == null || i.assignee_id === S.me.id;
+    const canTap = mine && (i.status === "todo" || i.status === "rejected");
+    const review = isParent() && i.status === "submitted"
+      ? `<button class="small primary" data-act="review" data-id="${i.id}" data-ok="1">Approve</button><button class="small" data-act="review" data-id="${i.id}" data-ok="0">Redo</button>` : "";
+    const statusChip = i.status === "submitted" ? `<span class="chip warn">Waiting for OK</span>` : i.status === "rejected" ? `<span class="chip bad">Try again</span>` : "";
+    const needsPhoto = canTap && i.requires_photo && !isParent();
+    const button = needsPhoto
+      ? `<label class="check" title="Take a photo to finish" role="button">📷<input type="file" accept="image/*" capture="environment" hidden data-chore-photo="${i.id}"></label>`
+      : `<button class="check ${cls}" ${canTap ? `data-act="complete" data-id="${i.id}"` : "disabled"} aria-label="Mark done">${icon}</button>`;
+    const photo = i.photo ? `<a href="${esc(i.photo.url)}" target="_blank" rel="noopener"><img class="thumb" src="${esc(i.photo.url)}" alt="Photo of ${esc(i.title)}" loading="lazy"></a>` : "";
+    return `<div class="item ${i.status === "approved" ? "done" : ""}">
+      ${button}
+      <div class="grow"><div class="title">${esc(i.title)}</div><div class="small muted">${esc(nameOf(i.assignee_id))} · ⭐ ${i.points}${i.requires_photo ? " · 📷 photo" : ""}</div></div>
+      ${photo}${statusChip}${review}</div>`;
+  }).join("")}</div>`;
+}
+
+function fmtTime(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function medList(items) {
+  const chip = { taken: `<span class="chip good">Taken ✓</span>`, skipped: `<span class="chip">Skipped</span>`,
+    missed: `<span class="chip bad">Missed</span>`, due: `<span class="chip warn">Due now</span>`, upcoming: "" };
+  return `<div class="list">${items.map((m) => {
+    const mine = isParent() || m.member_id === S.me.id;
+    const open = m.status === "due" || m.status === "upcoming";
+    return `<div class="item"><div style="width:72px" class="small muted">${esc(m.time)}</div>${avatar(member(m.member_id), 26)}
+      <div class="grow"><div class="title">💊 ${esc(m.title)}</div></div>${chip[m.status] || ""}
+      ${mine && open ? `<button class="small primary" data-act="dose" data-id="${m.record_id}" data-slot="${m.slot}" data-status="taken">Taken</button>
+        <button class="small" data-act="dose" data-id="${m.record_id}" data-slot="${m.slot}" data-status="skipped">Skip</button>` : ""}</div>`;
+  }).join("")}</div>`;
+}
+
+function homeworkList(items) {
+  if (!items.length) return `<div class="list"><div class="empty">All caught up 📚</div></div>`;
+  const today = ymd(new Date());
+  return `<div class="list">${items.map((h) => {
+    const late = h.status !== "done" && h.due_date < today;
+    return `<div class="item ${h.status === "done" ? "done" : ""}">
+      <button class="check ${h.status === "done" ? "on" : h.status === "in_progress" ? "wait" : ""}" data-act="hwCycle" data-id="${h.id}" data-status="${h.status}" aria-label="Change status">${h.status === "done" ? "✓" : h.status === "in_progress" ? "…" : ""}</button>
+      <div class="grow"><div class="title">${esc(h.subject)}: ${esc(h.title)}</div>
+        <div class="small muted">${isParent() ? esc(nameOf(h.member_id)) + " · " : ""}Due ${dayLabel(h.due_date)}${h.points ? ` · ⭐ ${h.points}` : ""}</div>
+        ${attachLinks(h.attachments)}</div>
+      ${late ? `<span class="chip bad">Late</span>` : ""}
+      <label class="btn small" title="Attach a file">📎<input type="file" hidden data-upload="homework" data-id="${h.id}"></label>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function attachLinks(list) {
+  if (!list?.length) return "";
+  return `<div class="small">${list.map((a) => `<a href="${esc(a.url)}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join(" · ")}</div>`;
+}
+
+// ---------- chores
+
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+VIEWS.chores = async () => {
+  const day = S.choreDay;
+  const [items, defs] = await Promise.all([
+    api("GET", `/api/chores/instances?start=${day}&end=${day}`),
+    isParent() ? api("GET", "/api/chores") : Promise.resolve([]),
+  ]);
+  const mine = isParent() ? items : items.filter((i) => i.assignee_id == null || i.assignee_id === S.me.id);
+  const manage = isParent() ? `<h2>All chores</h2><div class="list">${defs.map((c) => `<div class="item"><div class="grow">
+      <div class="title">${esc(c.title)}</div><div class="small muted">${esc(nameOf(c.assignee_id))} · ⭐ ${c.points} · ${recurrenceLabel(c)}${c.requires_approval ? "" : " · auto-approve"}</div></div>
+      <button class="small danger" data-act="delChore" data-id="${c.id}">Remove</button></div>`).join("") || `<div class="empty">No chores yet.</div>`}</div>
+    <details class="add card"><summary>+ Add a chore</summary><form class="stack" data-form="addChore">
+      <div class="fields"><label>Chore<input name="title" required placeholder="Unload dishwasher"></label>
+      <label>Who<select name="assignee_id">${memberOptions(null, { all: true })}</select></label>
+      <label>Points<input name="points" type="number" min="0" value="10"></label>
+      <label>Repeats<select name="recurrence"><option value="once">Once</option><option value="daily">Daily</option><option value="weekly" selected>Weekly</option><option value="monthly">Monthly</option></select></label>
+      <label>Starting<input name="start_date" type="date" value="${ymd(new Date())}"></label></div>
+      <div class="weekdays">${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="wd${i}" data-group="weekdays" value="${i}">${d}</label>`).join("")}</div>
+      <label class="inline"><input type="checkbox" name="requires_approval" checked> Parent approves before points are awarded</label>
+      <label class="inline"><input type="checkbox" name="requires_photo"> Kid takes a photo to prove it's done 📷</label>
+      <button class="primary">Add chore</button></form></details>` : "";
+  return `<div class="top"><h1 class="grow">Chores</h1>
+      <button data-act="choreDay" data-delta="-1" aria-label="Previous day">‹</button>
+      <strong>${dayLabel(day)}</strong>
+      <button data-act="choreDay" data-delta="1" aria-label="Next day">›</button></div>
+    ${choreList(mine, "Nothing for this day.")}${manage}`;
+};
+
+function recurrenceLabel(c) {
+  if (c.recurrence === "weekly") return "Weekly " + (c.weekdays.length ? c.weekdays.map((d) => WEEKDAYS[d]).join(", ") : WEEKDAYS[(parseYmd(c.start_date).getDay() + 6) % 7]);
+  return { once: `Once (${dayLabel(c.start_date)})`, daily: "Daily", monthly: `Monthly on day ${parseYmd(c.start_date).getDate()}` }[c.recurrence];
+}
+
+// ---------- rewards
+
+VIEWS.rewards = async () => {
+  const [rewards, reds] = await Promise.all([api("GET", "/api/rewards"), api("GET", "/api/redemptions")]);
+  const pts = isParent() ? null : (await api("GET", `/api/points/${S.me.id}`));
+  const pending = reds.filter((r) => r.status === "pending");
+  const cards = rewards.map((r) => {
+    const short = pts && pts.balance < r.cost;
+    return `<div class="card"><div style="font-size:34px">${esc(r.icon)}</div><h3>${esc(r.title)}</h3>
+      <div class="muted">⭐ ${r.cost} points</div><div class="row" style="margin-top:10px">
+      ${isParent() ? `<button class="small danger" data-act="delReward" data-id="${r.id}">Remove</button>`
+        : `<button class="primary small" data-act="redeem" data-id="${r.id}" ${short ? "disabled" : ""}>${short ? `${r.cost - pts.balance} more to go` : "Get it!"}</button>`}</div></div>`;
+  }).join("");
+  const requests = pending.length ? `<h2>Requests</h2><div class="list">${pending.map((r) => `<div class="item">${avatar(member(r.member_id))}
+      <div class="grow"><div class="title">${esc(r.icon)} ${esc(r.title)}</div><div class="small muted">${esc(nameOf(r.member_id))} · ⭐ ${r.cost} · ${ago(r.created_at)}</div></div>
+      ${isParent() ? `<button class="small primary" data-act="decide" data-id="${r.id}" data-ok="1">Give it</button><button class="small" data-act="decide" data-id="${r.id}" data-ok="0">Not now</button>` : `<span class="chip warn">Waiting</span>`}</div>`).join("")}</div>` : "";
+  const kidsPts = isParent() ? `<h2>Points</h2><div class="grid">${S.members.filter((m) => m.role === "child").map((m) => `<div class="card row">${avatar(m)}<div class="grow"><div class="title">${esc(m.name)}</div><div class="stat">⭐ ${m.points}</div></div></div>`).join("")}</div>
+    <details class="add card"><summary>± Give or take points</summary><form class="stack" data-form="adjust"><div class="fields">
+      <label>Kid<select name="member_id">${memberOptions(null, { kidsOnly: true })}</select></label>
+      <label>Points (negative to take)<input name="amount" type="number" required value="5"></label>
+      <label>Why<input name="reason" required placeholder="Helped a sibling"></label></div><button class="primary">Save</button></form></details>
+    <details class="add card"><summary>+ Add a reward</summary><form class="stack" data-form="addReward"><div class="fields">
+      <label>Reward<input name="title" required placeholder="Pick Friday's movie"></label>
+      <label>Cost (points)<input name="cost" type="number" min="1" value="50" required></label>
+      <label>Emoji<input name="icon" value="🎁" maxlength="4"></label></div><button class="primary">Add reward</button></form></details>` : "";
+  const history = pts ? `<h2>My points history</h2><div class="list">${pts.entries.slice(0, 20).map((e) => `<div class="item"><div class="grow">${esc(e.reason)}<div class="small muted">${ago(e.created_at)}</div></div><strong class="${e.amount >= 0 ? "" : "muted"}">${e.amount > 0 ? "+" : ""}${e.amount}</strong></div>`).join("") || `<div class="empty">Finish chores to earn points!</div>`}</div>` : "";
+  return `<div class="top"><h1 class="grow">Rewards</h1>${pts ? `<span class="chip brand">⭐ ${pts.balance} points</span>` : ""}</div>
+    ${requests}<h2>Reward shop</h2><div class="grid">${cards || `<div class="card muted">No rewards yet${isParent() ? " — add some below" : ""}.</div>`}</div>
+    ${kidsPts}${history}`;
+};
+
+// ---------- calendar
+
+VIEWS.calendar = async () => {
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const end = new Date(start); end.setDate(end.getDate() + 31);
+  const events = await api("GET", `/api/events?start=${start.toISOString()}&end=${end.toISOString()}`);
+  const integ = isParent() ? await api("GET", "/api/integrations").catch(() => null) : null;
+  const byDay = {};
+  for (const e of events) (byDay[eventDay(e)] ??= []).push(e);
+  const src = { google: `<span class="chip">Google</span>`, icloud: `<span class="chip">iCloud</span>`, ics: `<span class="chip">Linked</span>`, local: "" };
+  const days = Object.keys(byDay).sort().map((d) => `<h2>${dayLabel(d)}</h2><div class="list">${byDay[d].map((e) => `<div class="item">
+      <div style="width:70px" class="small muted">${eventTime(e)}</div>
+      <div class="grow"><div class="title">${esc(e.title)}</div>${e.location ? `<div class="small muted">📍 ${esc(e.location)}</div>` : ""}</div>
+      ${e.member_ids.map((id) => avatar(member(id), 26)).join("")}${src[e.source] || ""}
+      ${e.pushed.map((p) => `<span class="chip good" title="Copied to ${p}">→ ${p}</span>`).join("")}
+      ${isParent() && e.source === "local" ? `<button class="small ghost" data-act="delEvent" data-id="${e.id}" aria-label="Delete">✕</button>` : ""}</div>`).join("")}</div>`).join("");
+  const targets = [integ?.google && "google", integ?.icloud && "icloud"].filter(Boolean);
+  const ics = events.some((e) => e.source === "ics");
+  return `<div class="top"><h1 class="grow">Calendar</h1>${isParent() && (targets.length || ics) ? `<button data-act="syncCal">⟳ Sync now</button>` : ""}</div>
+    ${isParent() && integ && !targets.length && !ics ? `<div class="banner info">Bring in Google, iCloud, school and team calendars on the <a href="#connections">Connections</a> page.</div>` : ""}
+    <details class="add card"><summary>+ Add an event</summary><form class="stack" data-form="addEvent"><div class="fields">
+      <label>What<input name="title" required placeholder="Soccer practice"></label>
+      <label>Starts<input name="start" type="datetime-local" required></label>
+      <label>Ends<input name="end" type="datetime-local"></label>
+      <label>Where<input name="location"></label></div>
+      <label class="inline"><input type="checkbox" name="all_day"> All day</label>
+      <div class="weekdays">${S.members.map((m) => `<label><input type="checkbox" name="m${m.id}" data-group="member_ids" value="${m.id}">${esc(m.name)}</label>`).join("")}</div>
+      ${targets.length ? `<div class="weekdays">${targets.map((t) => `<label><input type="checkbox" name="p${t}" data-group="push_to" value="${t}" checked>Add to ${t === "google" ? "Google" : "iCloud"}</label>`).join("")}</div>` : ""}
+      <button class="primary">Add event</button></form></details>
+    ${days || `<div class="card muted" style="margin-top:12px">No events in the next month.</div>`}`;
+};
+
+// ---------- homework
+
+VIEWS.homework = async () => {
+  const showDone = localStore("fh_hw_done") === "1";
+  const items = await api("GET", `/api/homework?include_done=${showDone}`);
+  return `<div class="top"><h1 class="grow">Homework</h1>
+      <label class="inline small"><input type="checkbox" data-act="toggleHwDone" ${showDone ? "checked" : ""}> Show finished</label></div>
+    ${homeworkList(items)}
+    <details class="add card"><summary>+ Add homework</summary><form class="stack" data-form="addHomework"><div class="fields">
+      ${isParent() ? `<label>For<select name="member_id">${memberOptions(null, { kidsOnly: true })}</select></label>` : ""}
+      <label>Subject<input name="subject" required placeholder="Math" list="subjects"></label>
+      <label>Assignment<input name="title" required placeholder="Worksheet p. 42"></label>
+      <label>Due<input name="due_date" type="date" value="${addDays(ymd(new Date()), 1)}" required></label>
+      ${isParent() ? `<label>Bonus points<input name="points" type="number" min="0" value="0"></label>` : ""}</div>
+      <datalist id="subjects">${["Math", "Reading", "Science", "Spanish", "History", "Writing", "Art", "Music"].map((s) => `<option value="${s}">`).join("")}</datalist>
+      <button class="primary">Add</button></form></details>
+    <p class="small muted">Tap the circle to move between to-do → working on it → done. 📎 attaches a photo or file.</p>`;
+};
+
+// ---------- milestones
+
+VIEWS.milestones = async () => {
+  const items = await api("GET", "/api/milestones");
+  return `<div class="top"><h1 class="grow">Milestones</h1></div>
+    <details class="add card"><summary>+ Record a milestone</summary><form class="stack" data-form="addMilestone"><div class="fields">
+      <label>What happened<input name="title" required placeholder="First bike ride without training wheels"></label>
+      <label>Who<select name="member_id">${memberOptions(null, { all: true })}</select></label>
+      <label>When<input name="date" type="date" value="${ymd(new Date())}" required></label>
+      <label>Type<select name="category">${["first", "school", "sports", "health", "growth", "achievement", "family", "general"].map((c) => `<option>${c}</option>`).join("")}</select></label></div>
+      <label>Notes<textarea name="notes"></textarea></label><button class="primary">Save</button></form></details>
+    <div class="timeline" style="margin-top:18px">${items.map((m) => `<div class="card"><div class="row">
+      ${avatar(member(m.member_id), 28)}<div class="grow"><h3>${esc(m.title)}</h3>
+      <div class="small muted">${parseYmd(m.date).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })} · ${esc(m.category)}</div></div>
+      <label class="btn small" title="Add a photo">📷<input type="file" accept="image/*,video/*,application/pdf" hidden data-upload="milestones" data-id="${m.id}"></label>
+      ${isParent() ? `<button class="small ghost" data-act="delMilestone" data-id="${m.id}" aria-label="Delete">✕</button>` : ""}</div>
+      ${m.notes ? `<p>${esc(m.notes)}</p>` : ""}${attachLinks(m.attachments)}</div>`).join("") || `<div class="card muted">Firsts, wins and big days go here.</div>`}</div>`;
+};
+
+// ---------- money
+
+VIEWS.money = async () => {
+  if (!isParent()) {
+    const [w, goals] = await Promise.all([api("GET", `/api/finance/wallet/${S.me.id}`), api("GET", "/api/finance/goals")]);
+    return `<div class="top"><h1 class="grow">My money</h1></div>
+      <div class="card"><div class="muted">In my wallet</div><div class="stat">${money(w.balance_cents)}</div>
+      ${S.me.weekly_allowance_cents ? `<div class="small muted">Allowance: ${money(S.me.weekly_allowance_cents)} / week</div>` : ""}</div>
+      <h2>Saving for</h2><div class="grid">${goals.map(goalCard).join("") || `<div class="card muted">What do you want to save up for?</div>`}</div>
+      ${goalForm(S.me.id)}
+      <details class="add card"><summary>− I spent some money</summary><form class="stack" data-form="kidSpend"><div class="fields">
+        <label>Amount ($)<input name="amount" type="number" step="0.01" min="0.01" required></label>
+        <label>On what<input name="description" required placeholder="Comic book"></label></div><button class="primary">Save</button></form></details>
+      <h2>History</h2>${txList(w.transactions)}`;
+  }
+  const [s, txs, budgets] = await Promise.all([
+    api("GET", `/api/finance/summary?month=${S.month}`),
+    api("GET", `/api/finance/transactions?month=${S.month}`),
+    api("GET", "/api/finance/budgets"),
+  ]);
+  const monthName = parseYmd(S.month + "-01").toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const cats = s.categories.map((c) => {
+    const pct = c.budget_cents ? Math.min(100, (100 * c.spent_cents) / c.budget_cents) : 0;
+    return `<div class="item"><div class="grow"><div class="row"><span class="title grow">${esc(c.category)}</span>
+      <span class="small">${money(c.spent_cents)}${c.budget_cents ? ` of ${money(c.budget_cents)}` : ""}</span></div>
+      ${c.budget_cents ? `<div class="bar ${c.spent_cents > c.budget_cents ? "over" : ""}"><div style="width:${pct}%"></div></div>` : ""}</div></div>`;
+  }).join("");
+  return `<div class="top"><h1 class="grow">Money</h1>
+      <button data-act="month" data-delta="-1" aria-label="Previous month">‹</button><strong>${monthName}</strong><button data-act="month" data-delta="1" aria-label="Next month">›</button></div>
+    <div class="grid"><div class="card"><div class="muted">Income</div><div class="stat good">${money(s.income_cents)}</div></div>
+      <div class="card"><div class="muted">Spent</div><div class="stat">${money(s.expense_cents)}</div></div>
+      <div class="card"><div class="muted">Left over</div><div class="stat ${s.net_cents < 0 ? "bad" : ""}">${money(s.net_cents)}</div></div></div>
+    <details class="add card"><summary>+ Add income or expense</summary><form class="stack" data-form="addTx"><div class="fields">
+      <label>Type<select name="kind"><option value="out">Expense</option><option value="in">Income</option></select></label>
+      <label>Amount ($)<input name="amount" type="number" step="0.01" min="0.01" required></label>
+      <label>Category<input name="category" list="cats" required placeholder="groceries"></label>
+      <label>Note<input name="description"></label>
+      <label>Date<input name="date" type="date" value="${ymd(new Date())}"></label>
+      <label>Kid's wallet<select name="member_id">${memberOptions(null, { kidsOnly: true, none: "— Household —" })}</select></label></div>
+      <datalist id="cats">${[...new Set([...budgets.map((b) => b.category), "groceries", "dining", "utilities", "rent", "kids", "gas", "health", "fun", "salary"])].map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
+      <button class="primary">Save</button></form></details>
+    <h2>Spending by category</h2><div class="list">${cats || `<div class="empty">No spending recorded this month.</div>`}</div>
+    <details class="add card"><summary>⚖ Set a monthly budget</summary><form class="stack" data-form="setBudget"><div class="fields">
+      <label>Category<input name="category" list="cats" required></label>
+      <label>Monthly limit ($)<input name="limit" type="number" step="1" min="1" required></label></div>
+      <button class="primary">Save budget</button><p class="small muted">You'll get an alert at 80% and when a category goes over.</p></form></details>
+    <h2>Kids' wallets</h2><div class="grid">${s.wallets.map((w) => `<div class="card row">${avatar(member(w.member_id))}<div class="grow"><div class="title">${esc(w.name)}</div>
+      <div class="stat">${money(w.balance_cents)}</div><div class="small muted">${w.weekly_allowance_cents ? money(w.weekly_allowance_cents) + "/week allowance" : "No allowance set"}</div></div></div>`).join("") || `<div class="card muted">Add kids in Settings.</div>`}</div>
+    ${s.wallets.some((w) => w.goals.length) ? `<h2>Savings goals</h2><div class="grid">${s.wallets.flatMap((w) => w.goals).map(goalCard).join("")}</div>` : ""}
+    ${s.wallets.length ? goalForm(null) : ""}
+    <h2>Transactions</h2>${txList(txs, true)}`;
+};
+
+function goalCard(g) {
+  const kid = member(g.member_id);
+  const done = g.status === "reached";
+  const btns = g.status === "spent" ? `<span class="chip good">Bought 🛍️</span>` : [
+    `<button class="small primary" data-act="goalMove" data-id="${g.id}" data-kind="deposit">+ Add money</button>`,
+    isParent() ? `<button class="small" data-act="goalMove" data-id="${g.id}" data-kind="gift">🎁 Gift</button>` : "",
+    g.saved_cents ? `<button class="small" data-act="goalMove" data-id="${g.id}" data-kind="withdraw">Take out</button>` : "",
+    done || isParent() ? `<button class="small ${done ? "primary" : ""}" data-act="goalSpend" data-id="${g.id}">${done ? "Buy it! 🎉" : "Mark bought"}</button>` : "",
+    isParent() ? `<button class="small" data-act="goalMatch" data-id="${g.id}" data-pct="${g.match_percent}">Match ${g.match_percent}%</button>` : "",
+    `<button class="small ghost" data-act="goalClose" data-id="${g.id}" aria-label="Cancel goal">✕</button>`,
+  ].join(" ");
+  return `<div class="card stack"><div class="row"><span style="font-size:30px">${esc(g.icon)}</span>
+      <div class="grow"><h3>${esc(g.title)}</h3><div class="small muted">${isParent() ? esc(kid?.name || "") + " · " : ""}${money(g.saved_cents)} of ${money(g.target_cents)}${g.match_percent ? ` · parents add ${g.match_percent}%` : ""}</div></div>
+      ${done ? `<span class="chip good">Goal reached!</span>` : `<strong>${g.percent}%</strong>`}</div>
+    <div class="bar"><div style="width:${g.percent}%;${done ? "background:var(--good)" : ""}"></div></div>
+    <div class="row">${btns}</div></div>`;
+}
+
+function goalForm(memberId) {
+  return `<details class="add card"><summary>+ New savings goal</summary><form class="stack" data-form="addGoal"><div class="fields">
+    ${memberId ? `<input type="hidden" name="member_id" value="${memberId}">` : `<label>For<select name="member_id">${memberOptions(null, { kidsOnly: true })}</select></label>`}
+    <label>Saving for<input name="title" required placeholder="New bike"></label>
+    <label>Goal ($)<input name="target" type="number" step="0.01" min="1" required></label>
+    <label>Emoji<input name="icon" value="🎯" maxlength="4"></label>
+    ${isParent() ? `<label>Parent match (%)<input name="match_percent" type="number" min="0" max="200" value="0"></label>` : ""}</div>
+    <button class="primary">Start saving</button></form></details>`;
+}
+
+function txList(txs, canDelete = false) {
+  if (!txs.length) return `<div class="list"><div class="empty">Nothing yet.</div></div>`;
+  return `<div class="list">${txs.map((t) => `<div class="item"><div class="grow"><div class="title">${esc(t.description || t.category)}</div>
+    <div class="small muted">${dayLabel(t.date)} · ${esc(t.category)}${t.member_id ? " · " + esc(nameOf(t.member_id)) + "'s wallet" : ""}</div></div>
+    <strong style="color:${t.amount_cents > 0 ? "var(--good)" : "var(--text)"}">${t.amount_cents > 0 ? "+" : ""}${money(t.amount_cents)}</strong>
+    ${canDelete ? `<button class="small ghost" data-act="delTx" data-id="${t.id}" aria-label="Delete">✕</button>` : ""}</div>`).join("")}</div>`;
+}
+
+// ---------- health
+
+const HEALTH_KINDS = { appointment: "🗓 Appointments", medication: "💊 Medications", allergy: "⚠️ Allergies", immunization: "💉 Immunizations", vital: "📏 Growth & vitals", note: "📝 Notes" };
+
+VIEWS.health = async () => {
+  const who = isParent() ? intOrNull(localStore("fh_health_member")) : S.me.id;
+  const recs = await api("GET", `/api/health${who ? `?member_id=${who}` : ""}`);
+  const groups = Object.entries(HEALTH_KINDS).map(([k, label]) => {
+    const rows = recs.filter((r) => r.kind === k);
+    if (!rows.length) return "";
+    return `<h2>${label}</h2><div class="list">${rows.map((r) => `<div class="item">${avatar(member(r.member_id), 28)}<div class="grow">
+      <div class="title">${esc(r.title)}${r.value ? ` — ${esc(r.value)} ${esc(r.unit)}` : ""}</div>
+      <div class="small muted">${r.date ? dayLabel(r.date) : ""}${r.next_due ? ` · next due ${dayLabel(r.next_due)}` : ""}${r.notes ? " · " + esc(r.notes) : ""}</div>
+      ${r.reminder_times.length ? `<div class="small">⏰ ${r.reminder_times.map(fmtTime).join(", ")}${r.reminder_days.length ? " · " + r.reminder_days.map((d) => WEEKDAYS[d]).join(" ") : " · daily"}${r.reminder_until ? ` · until ${dayLabel(r.reminder_until)}` : ""}</div>` : ""}${attachLinks(r.attachments)}</div>
+      ${isParent() ? `<label class="btn small" title="Attach a document">📎<input type="file" hidden data-upload="health" data-id="${r.id}"></label>
+      <button class="small ghost" data-act="delHealth" data-id="${r.id}" aria-label="Delete">✕</button>` : ""}</div>`).join("")}</div>`;
+  }).join("");
+  return `<div class="top"><h1 class="grow">Health</h1>
+      ${isParent() ? `<select data-act="healthMember" style="width:auto">${memberOptions(who, { all: true })}</select>` : ""}</div>
+    ${isParent() ? `<details class="add card"><summary>+ Add a record</summary><form class="stack" data-form="addHealth" data-kind="appointment"><div class="fields">
+      <label>Who<select name="member_id">${memberOptions(who ?? S.members[0]?.id)}</select></label>
+      <label>Type<select name="kind" data-act="healthKind">${Object.entries(HEALTH_KINDS).map(([k, l]) => `<option value="${k}">${l.slice(2).trim()}</option>`).join("")}</select></label>
+      <label>Title<input name="title" required placeholder="Annual checkup / Amoxicillin / Height"></label>
+      <label>Date<input name="date" type="date" value="${ymd(new Date())}"></label>
+      <label>Value<input name="value" placeholder="e.g. 250 or 4'2&quot;"></label>
+      <label>Unit<input name="unit" placeholder="mg, in, lb"></label>
+      <label>Next due<input name="next_due" type="date"></label></div>
+      <div class="med-only stack"><strong class="small">💊 Reminders (sent to that person's phone; parents are told if a kid misses one)</strong>
+        <div class="fields"><label>Times<input name="reminder_times" placeholder="08:00, 20:00"></label>
+        <label>Until (optional)<input name="reminder_until" type="date"></label></div>
+        <div class="weekdays">${WEEKDAYS.map((d, i) => `<label><input type="checkbox" name="rd${i}" data-group="reminder_days" value="${i}">${d}</label>`).join("")}</div>
+        <div class="small muted">Leave all days unticked for every day.</div></div>
+      <label>Notes<textarea name="notes" placeholder="Doctor, dosage schedule, reactions…"></textarea></label>
+      <button class="primary">Save</button><p class="small muted">Records with a "next due" date show up in the daily digest a week ahead.</p></form></details>` : ""}
+    ${groups || `<div class="card muted" style="margin-top:12px">No health records yet.</div>`}`;
+};
+
+// ---------- map
+
+VIEWS.map = async () => {
+  const [people, fences, fam] = await Promise.all([api("GET", "/api/location/latest"), api("GET", "/api/geofences"),
+    isParent() ? api("GET", "/api/family") : Promise.resolve(null)]);
+  S._mapData = { people, fences };
+  const sharing = S.watchId != null;
+  return `<div class="top"><h1 class="grow">Where is everyone</h1>
+      <button class="${sharing ? "" : "primary"}" data-act="toggleShare">${sharing ? "Stop sharing" : "📍 Share my location"}</button></div>
+    <div id="map"></div>
+    <div class="list" style="margin-top:12px">${people.map((p) => `<div class="item">${avatar(member(p.member_id))}<div class="grow">
+      <div class="title">${esc(p.name)} ${p.places.map((x) => `<span class="chip good">${esc(x)}</span>`).join("")}</div>
+      <div class="small muted">${!p.share_location ? "Location sharing off" : p.last ? `Updated ${ago(p.last.at)}${p.last.battery != null ? ` · 🔋 ${Math.round(p.last.battery)}%` : ""}` : "No location yet"}</div></div>
+      ${p.last ? `<button class="small" data-act="focus" data-lat="${p.last.lat}" data-lng="${p.last.lng}">Show</button>` : ""}</div>`).join("")}</div>
+    ${isParent() ? `<h2>Places</h2><div class="list">${fences.map((f) => `<div class="item"><div class="grow"><div class="title">${esc(f.name)}</div>
+      <div class="small muted">${Math.round(f.radius_m)} m radius · alerts on ${[f.notify_enter && "arrive", f.notify_leave && "leave"].filter(Boolean).join(" & ") || "nothing"}</div></div>
+      <button class="small danger" data-act="delFence" data-id="${f.id}">Remove</button></div>`).join("") || `<div class="empty">Add Home, School, Grandma's… Name one “Home” to get “nobody's home and the door is unlocked” alerts.</div>`}</div>
+    <details class="add card" id="fenceForm"><summary>+ Add a place (or tap the map)</summary><form class="stack" data-form="addFence"><div class="fields">
+      <label>Name<input name="name" required placeholder="Home"></label>
+      <label>Latitude<input name="lat" type="number" step="any" required></label>
+      <label>Longitude<input name="lng" type="number" step="any" required></label>
+      <label>Radius (m)<input name="radius_m" type="number" min="25" value="150"></label></div>
+      <label class="inline"><input type="checkbox" name="notify_enter" checked> Alert on arrive</label>
+      <label class="inline"><input type="checkbox" name="notify_leave" checked> Alert on leave</label>
+      <button class="primary">Save place</button></form></details>` : ""}
+    ${isParent() ? autoLocation(fam, fences) : `<p class="small muted">Your location is shared while this app is open.</p>`}`;
+};
+
+function autoLocation(fam, fences) {
+  const hasHome = fences.some((f) => f.name.trim().toLowerCase() === "home");
+  const who = intOrNull(localStore("fh_sc_member")) ?? S.members[0]?.id;
+  const url = (path, params) => `${fam.hook_base}/${path}?member=${who}${params}`;
+  const place = esc(localStore("fh_sc_place") || "Home");
+  const st = fam.settings;
+  return `<h2>Automatic location — no extra apps</h2>
+    <div class="card stack"><h3>1 · Home Wi-Fi presence</h3>
+      <div class="small muted">The hub notices family phones on your home Wi-Fi. Works for iPhone and Android with nothing installed.
+        It powers “arrived home / left home” and the “nobody's home but the door is unlocked” alert.</div>
+      ${hasHome ? "" : `<div class="small" style="color:var(--warn)">Add a place named <strong>Home</strong> above first.</div>`}
+      <label class="inline"><input type="checkbox" data-act="wifiPresence" ${st.wifi_presence ? "checked" : ""}> Detect phones on home Wi-Fi</label>
+      ${st.wifi_presence && fam.wifi_scan.last_scan ? (fam.wifi_scan.error
+        ? `<div class="small" style="color:var(--bad)">Last scan failed: ${esc(fam.wifi_scan.error)}. On the Mac, allow python under System Settings → Privacy &amp; Security → Local Network.</div>`
+        : `<div class="small muted">Last scan ${ago(fam.wifi_scan.last_scan)}: ${fam.wifi_scan.devices} devices on the network.</div>`) : ""}
+      <div class="list">${S.members.map((m) => `<div class="item">${avatar(m, 28)}<div class="grow"><div class="title">${esc(m.name)}</div>
+        <div class="small muted">${m.wifi_macs.length ? m.wifi_macs.join(", ") + (m.wifi_last_seen ? ` · seen ${ago(m.wifi_last_seen)}` : " · not seen yet") : "No phone added"}</div></div>
+        <button class="small" data-act="setMacs" data-id="${m.id}">${m.wifi_macs.length ? "Edit" : "Add phone"}</button></div>`).join("")}</div>
+      <div class="small muted">Find a phone's Wi-Fi address: <strong>iPhone</strong> Settings → Wi-Fi → ⓘ next to your network → set
+        <em>Private Wi-Fi Address</em> to <strong>Fixed</strong>, then copy <em>Wi-Fi Address</em>.
+        <strong>Android</strong> Settings → Network → Wi-Fi → your network → Privacy: use device MAC (or note the randomized one shown).</div>
+      <div><button class="small" data-act="scanLan">Show devices on the network now</button></div><div id="lanList"></div></div>
+
+    <div class="card stack" style="margin-top:10px"><h3>2 · iPhone Shortcuts (built in) — arrive & leave anywhere</h3>
+      <div class="row"><label>Phone of<select data-act="scMember">${memberOptions(who)}</select></label>
+        <label>Place<select data-act="scPlace">${fences.map((f) => `<option ${f.name === place ? "selected" : ""}>${esc(f.name)}</option>`).join("") || "<option>Home</option>"}</select></label></div>
+      <ol class="small" style="margin:0;padding-left:20px">
+        <li>On that iPhone open <strong>Shortcuts</strong> → <strong>Automation</strong> → <strong>+</strong> → <strong>Arrive</strong>.</li>
+        <li>Choose the place's location, pick <strong>Run Immediately</strong> (turn off Notify When Run), tap <strong>Next</strong> → <strong>New Blank Automation</strong>.</li>
+        <li>Add the action <strong>Get Contents of URL</strong> and paste:<div class="copy">${esc(url("presence", `&place=${encodeURIComponent(place)}&event=arrive`))}</div></li>
+        <li>Make a second automation with <strong>Leave</strong> and this URL:<div class="copy">${esc(url("presence", `&place=${encodeURIComponent(place)}&event=leave`))}</div></li>
+      </ol>
+      <details class="small"><summary><strong>Optional: send the exact location on a schedule</strong></summary>
+        <ol style="padding-left:20px">
+          <li>New automation → <strong>Time of Day</strong> (or <strong>Charger</strong> → disconnected) → Run Immediately → New Blank Automation.</li>
+          <li>Add <strong>Get Current Location</strong>.</li>
+          <li>Add <strong>Get Contents of URL</strong> with this URL, tap ▸ → Method <strong>POST</strong>, Request Body <strong>JSON</strong>:
+            add field <code>lat</code> = Current Location → tap it → <strong>Latitude</strong>; field <code>lng</code> = Current Location → <strong>Longitude</strong>.
+            <div class="copy">${esc(url("location", ""))}</div></li>
+        </ol></details>
+      <div class="small muted">Android phones: Wi-Fi presence (above) covers home, and the app shares location while it's open.</div></div>`;
+}
+
+MOUNT.map = () => {
+  if (!window.L) { $("#map").innerHTML = `<div class="empty">Map library didn't load. Check your connection.</div>`; return; }
+  const { people, fences } = S._mapData;
+  const map = L.map("map");
+  S.map = map;
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+  const pts = [];
+  for (const f of fences) {
+    L.circle([f.lat, f.lng], { radius: f.radius_m, color: "#3F6FE0", weight: 1, fillOpacity: 0.08 }).addTo(map).bindTooltip(f.name);
+    pts.push([f.lat, f.lng]);
+  }
+  for (const p of people) {
+    if (!p.last) continue;
+    const icon = L.divIcon({ className: "", html: avatar(member(p.member_id)), iconSize: [34, 34], iconAnchor: [17, 17] });
+    L.marker([p.last.lat, p.last.lng], { icon }).addTo(map).bindPopup(`<b>${esc(p.name)}</b><br>${ago(p.last.at)}`);
+    pts.push([p.last.lat, p.last.lng]);
+  }
+  if (pts.length) map.fitBounds(pts, { padding: [40, 40], maxZoom: 15 }); else map.setView([39.5, -98.35], 4);
+  if (isParent()) {
+    map.on("click", (e) => {
+      const form = $("#fenceForm");
+      form.open = true;
+      form.querySelector("[name=lat]").value = e.latlng.lat.toFixed(6);
+      form.querySelector("[name=lng]").value = e.latlng.lng.toFixed(6);
+      form.querySelector("[name=name]").focus();
+    });
+  }
+};
+
+function startSharing(announce = true) {
+  if (!navigator.geolocation || S.watchId != null) return;
+  S.watchId = navigator.geolocation.watchPosition(async (pos) => {
+    const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+    const now = Date.now();
+    const last = S.lastSent;
+    // Send at most every 2 minutes unless we've moved noticeably.
+    if (last && now - last.t < 120000 && Math.hypot(lat - last.lat, lng - last.lng) < 0.0008) return;
+    S.lastSent = { t: now, lat, lng };
+    let battery = null;
+    try { battery = navigator.getBattery ? Math.round((await navigator.getBattery()).level * 100) : null; } catch { /* unsupported */ }
+    api("POST", "/api/location", { lat, lng, accuracy_m: accuracy, battery })
+      .then((r) => {
+        r.transitions.forEach((t) => toast(`You ${t}`));
+        if (!last && currentView() === "map") refresh();  // show your own dot as soon as the first fix lands
+      }).catch(() => {});
+  }, (err) => { toast(`Location: ${err.message}`); stopSharing(); }, { enableHighAccuracy: true, maximumAge: 60000 });
+  localStore("fh_share", "1");
+  if (announce) toast("Sharing your location while the app is open");
+}
+
+function stopSharing() {
+  if (S.watchId != null) navigator.geolocation.clearWatch(S.watchId);
+  S.watchId = null;
+  localStore("fh_share", null);
+}
+
+// ---------- push notifications (free; iPhone needs the app added to the Home Screen first)
+
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+function pushState() {
+  if (pushSupported()) return Notification.permission === "granted" ? (localStore("fh_push") === "1" ? "on" : "granted") : Notification.permission;
+  return isIOS() && !isStandalone() ? "needs-install" : "unsupported";
+}
+
+function b64ToBytes(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function enablePush() {
+  // requestPermission must be the first thing in the tap handler or iOS ignores it.
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("Notifications were not allowed. You can turn them on in the phone's Settings.");
+  const reg = await navigator.serviceWorker.ready;
+  const { public_key } = await api("GET", "/api/push/key");
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) await sub.unsubscribe().catch(() => {});  // re-subscribe in case the server key changed
+  sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(public_key) });
+  const json = sub.toJSON();
+  await api("POST", "/api/push/subscribe", { endpoint: json.endpoint, keys: json.keys, device: navigator.userAgent.slice(0, 120) });
+  localStore("fh_push", "1");
+  await api("POST", "/api/push/test");
+  toast("Notifications on 🔔");
+}
+
+async function disablePush() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    await api("POST", "/api/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
+    await sub.unsubscribe();
+  }
+  localStore("fh_push", null);
+  toast("Notifications off on this device");
+}
+
+function pushCard() {
+  const st = pushState();
+  const body = {
+    "on": `<span class="chip good">On for this device</span> <button class="small" data-act="testPush">Send a test</button> <button class="small" data-act="disablePush">Turn off</button>`,
+    "granted": `<button class="primary" data-act="enablePush">🔔 Turn on notifications</button>`,
+    "default": `<button class="primary" data-act="enablePush">🔔 Turn on notifications</button>`,
+    "denied": `<span class="chip bad">Blocked</span><div class="small muted">Allow notifications for Family Hub in this device's Settings, then reload.</div>`,
+    "needs-install": `<div class="small">On iPhone/iPad, notifications only work from the Home Screen app:<br>
+      1. Tap <strong>Share</strong> <span aria-hidden="true">⎋</span> in Safari → <strong>Add to Home Screen</strong><br>
+      2. Open Family Hub from the new icon and sign in<br>3. Come back here and turn notifications on</div>`,
+    "unsupported": `<div class="small muted">This browser can't receive notifications. Use Safari on iPhone (from the Home Screen icon) or Chrome on Android.</div>`,
+  }[st];
+  return `<div class="card stack"><h3>Notifications on this device</h3>
+    <div class="small muted">Free alerts to this phone — door, location, chores, rewards. No extra app needed.</div>${body}</div>`;
+}
+
+// ---------- doors
+
+function lockCard(l) {
+  const label = { locked: "🔒 Locked", unlocked: "🔓 Unlocked", jammed: "⚠️ Jammed", unknown: "❔ Unknown" }[l.state];
+  return `<div class="card lock ${l.state}"><div class="row"><h3 class="grow">${esc(l.name)}</h3>
+      ${l.battery != null ? `<span class="chip ${l.battery <= 20 ? "bad" : ""}">🔋 ${l.battery}%</span>` : ""}</div>
+    <div class="state">${label}</div>
+    <div class="small muted">${l.door !== "unknown" ? `Door ${l.door} · ` : ""}since ${ago(l.state_changed_at)}</div>
+    ${l.can_control ? `<div class="row">${l.state !== "locked" ? `<button class="primary" data-act="lockCmd" data-id="${l.id}" data-action="lock">Lock</button>` : ""}
+      ${l.state !== "unlocked" ? `<button data-act="lockCmd" data-id="${l.id}" data-action="unlock">Unlock</button>` : ""}</div>`
+      : `<div class="small muted">Status only — lock/unlock in the Philips app.</div>`}</div>`;
+}
+
+VIEWS.home = async () => {
+  const [locks, fam] = await Promise.all([api("GET", "/api/locks"), api("GET", "/api/family")]);
+  const logs = await Promise.all(locks.map((l) => api("GET", `/api/locks/${l.id}/events`)));
+  const st = fam.settings;
+  const recent = locks.flatMap((l, i) => logs[i].map((e) => ({ ...e, lock: l.name }))).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 25);
+  const evLabel = { locked: "🔒 Locked", unlocked: "🔓 Unlocked", jammed: "⚠️ Jammed", door_open: "🚪 Opened", door_closed: "🚪 Closed", battery_low: "🪫 Battery low" };
+  return `<div class="top"><h1 class="grow">Doors & locks</h1></div>
+    <div class="grid">${locks.map(lockCard).join("") || `<div class="card muted">No locks yet. Add your Philips deadbolt below.</div>`}</div>
+    <h2>Activity</h2><div class="list">${recent.map((e) => `<div class="item"><div class="grow"><div class="title">${evLabel[e.event] || esc(e.event)} · ${esc(e.lock)}</div>
+      <div class="small muted">${ago(e.at)}${e.actor ? " · " + esc(e.actor) : ""}${e.source ? " · via " + esc(e.source) : ""}</div></div></div>`).join("") || `<div class="empty">No activity yet.</div>`}</div>
+    <h2>Alert rules</h2><form class="card stack" data-form="doorRules"><div class="fields">
+      <label>Alert if unlocked longer than (min)<input name="unlocked_minutes" type="number" min="1" value="${st.unlocked_minutes ?? 10}"></label>
+      <label>Alert if door open longer than (min)<input name="door_open_minutes" type="number" min="1" value="${st.door_open_minutes ?? 5}"></label>
+      <label>Quiet hours start<input name="quiet_start" type="time" value="${esc(st.quiet_start ?? "22:00")}"></label>
+      <label>Quiet hours end<input name="quiet_end" type="time" value="${esc(st.quiet_end ?? "06:00")}"></label>
+      <label>Low battery at (%)<input name="battery_low_percent" type="number" min="1" max="99" value="${st.battery_low_percent ?? 20}"></label></div>
+      <label class="inline"><input type="checkbox" name="notify_all_unlocks" ${st.notify_all_unlocks ? "checked" : ""}> Tell me about every unlock (not just quiet hours)</label>
+      <button class="primary">Save rules</button>
+      <p class="small muted">Always on: jammed bolt (critical), unlock/open during quiet hours, low battery, and “nobody's home but the door is unlocked” (needs a place named Home on the Map).</p></form>
+    <details class="add card"><summary>+ Add a lock</summary><form class="stack" data-form="addLock"><div class="fields">
+      <label>Name<input name="name" required value="Front Door"></label>
+      <label>Connected through<select name="provider">
+        <option value="apple_home">Apple Home (via Shortcuts on the Mac) — free</option>
+        <option value="webhook">Webhook (status only, from an automation)</option>
+        <option value="homeassistant">Home Assistant (status + lock/unlock)</option>
+        <option value="simulated">Demo lock (try the app)</option></select></label>
+      <label>Lock ID<input name="external_id" required placeholder="Front Door (Apple Home name) or lock.front_door"></label></div>
+      <button class="primary">Add lock</button></form>
+      <details class="small" style="margin-top:10px"><summary><strong>Apple Home setup (Philips Matter locks, e.g. 4000 series)</strong></summary>
+        <ol style="padding-left:20px">
+          <li>Add the lock to the <strong>Home</strong> app on your iPhone (scan its Matter code). Remote access needs a HomePod or Apple TV as home hub.</li>
+          <li>On the Mac, open <strong>Shortcuts</strong> and make a shortcut named <code>Lock Front Door</code> with the Home action
+            <strong>Control Home</strong> → Front Door → Lock. Make <code>Unlock Front Door</code> the same way.
+            (Use your lock's name in place of “Front Door”; enter that name as the Lock ID here.)</li>
+          <li>Optional: <code>Status Front Door</code> with <strong>Get state of Front Door</strong> → Current Lock State, so the hub can check it every minute.</li>
+          <li>For instant alerts: in the Home app → Automation → <strong>+</strong> → <strong>An Accessory is Controlled</strong> → Front Door → <em>Unlocks</em> →
+            choose <strong>Convert to Shortcut</strong> → add <strong>Get Contents of URL</strong> with
+            <div class="copy">${esc(fam.webhooks.lock)}?lock=Front%20Door&amp;event=unlocked</div>
+            Repeat for <em>Locks</em> with <code>event=locked</code>.</li>
+        </ol>
+        <p class="muted">Wi-Fi-only Philips models that don't appear in Apple Home: use the Philips app for control, or Home Assistant (free, can run on the Mac).</p></details>
+      <div class="small muted" style="margin-top:10px">Webhook URL for your automations:<div class="copy">${esc(fam.webhooks.lock)}</div>
+      POST JSON like <code>{"lock": "lock.front_door", "event": "unlocked", "actor": "Keypad", "battery": 80}</code>.
+      Events: locked, unlocked, jammed, door_open, door_closed, battery_low.</div></details>
+    ${locks.length ? `<details class="add"><summary>Remove a lock</summary>${locks.map((l) => `<button class="small danger" data-act="delLock" data-id="${l.id}">Remove ${esc(l.name)}</button> `).join("")}</details>` : ""}`;
+};
+
+// ---------- alerts
+
+VIEWS.alerts = async () => {
+  const alerts = await api("GET", "/api/alerts");
+  const sev = { critical: "bad", warning: "warn", info: "brand" };
+  const ico = { door: "🔐", location: "📍", chore: "🧹", reward: "🎁", homework: "📚", health: "🩺", finance: "💵", digest: "🗒", system: "🏠" };
+  return `<div class="top"><h1 class="grow">Alerts</h1>${alerts.some((a) => !a.read) ? `<button data-act="readAll">Mark all read</button>` : ""}</div>
+    <div class="list">${alerts.map((a) => `<div class="item" style="${a.read ? "opacity:.65" : ""}"><div style="font-size:22px">${ico[a.kind] || "🔔"}</div>
+      <div class="grow"><div class="title">${esc(a.title)}</div>${a.body ? `<div class="small" style="white-space:pre-line">${esc(a.body)}</div>` : ""}
+      <div class="small muted">${ago(a.created_at)}${Object.values(a.delivery).some((d) => d !== "sent") ? " · ⚠ some channels failed" : ""}</div></div>
+      ${a.severity !== "info" ? `<span class="chip ${sev[a.severity]}">${a.severity}</span>` : ""}
+      ${!a.read ? `<button class="small ghost" data-act="read" data-id="${a.id}" aria-label="Mark read">✓</button>` : ""}</div>`).join("") || `<div class="empty">No alerts. All quiet 🌙</div>`}</div>`;
+};
+
+// ---------- connections (every outside service in one checklist)
+
+const STATE_CHIP = {
+  connected: `<span class="chip good">Connected</span>`, attention: `<span class="chip warn">Needs attention</span>`,
+  off: `<span class="chip">Not connected</span>`, unavailable: `<span class="chip">Not available</span>`,
+};
+const AVAIL_CHIP = { mac: `<span class="chip">Needs the Mac</span>`, bridge: `<span class="chip brand">Bridge — no public API</span>` };
+S.connStep = {};
+
+VIEWS.connections = async () => {
+  const [d, fam] = await Promise.all([api("GET", "/api/connectors"), api("GET", "/api/family")]);
+  S._conn = d;
+  const pct = Math.round((100 * d.connected) / d.total);
+  const groups = Object.entries(d.categories).map(([cat, label]) => {
+    const items = d.items.filter((i) => i.category === cat);
+    return items.length ? `<h2>${label}</h2>${items.map((i) => connCard(i, d, fam)).join("")}` : "";
+  }).join("");
+  const qs = new URLSearchParams(location.hash.split("?")[1] || "");
+  const flash = qs.get("google") ? `Google: ${qs.get("google")}` : qs.get("smartthings") ? `SmartThings: ${qs.get("smartthings")}` : "";
+  return `${flash ? `<div class="banner ${flash.endsWith("connected") ? "info" : "critical"}">${esc(flash)}</div>` : ""}<div class="top"><h1 class="grow">Connections</h1><span class="chip ${d.connected === d.total ? "good" : "brand"}">${d.connected} of ${d.total} connected</span></div>
+    <div class="bar" style="margin-bottom:8px"><div style="width:${pct}%"></div></div>
+    <p class="small muted">Everything the hub can talk to. “Bridge” items are services with no public API; the hub reaches them another
+      way today, and the slot is ready for a direct connection if one appears.</p>${groups}`;
+};
+
+function fieldInput(f, prefix = "") {
+  const attrs = `name="${prefix}${esc(f.name)}" ${f.required ? "required" : ""} placeholder="${esc(f.placeholder || "")}" autocomplete="off"`;
+  const input = f.kind === "textarea" ? `<textarea ${attrs} rows="4"></textarea>`
+    : `<input type="${f.kind === "password" ? "password" : f.kind === "email" ? "email" : f.kind === "url" ? "url" : "text"}" ${attrs}>`;
+  return `<label>${esc(f.label)}${input}${f.help ? `<span class="small muted" style="font-weight:400">${esc(f.help)}</span>` : ""}</label>`;
+}
+
+function connCard(i, d, fam) {
+  const open = location.hash.split("/")[1] === i.key || S.connStep[i.key] || i.state === "attention";
+  const step = S.connStep[i.key];
+  const connected = i.state === "connected" || (i.state === "attention" && i.connectable && i.last_sync_at);
+  let body = "";
+  if (i.key === "google") body = googleBody(i, d, fam);
+  else if (i.key === "hub_feed") body = feedBody(d);
+  else if (step) {
+    body = `<form class="stack" data-form="connFinish" data-key="${i.key}"><div class="banner info">${esc(step.message)}</div>
+      ${step.fields.map((f) => fieldInput(f)).join("")}<button class="primary">Continue</button></form>`;
+  } else if (i.connectable) {
+    const form = `<form class="stack" data-form="connect" data-key="${i.key}">${i.fields.map((f) => fieldInput(f)).join("")}
+      <button class="primary">${connected ? "Update" : "Connect"}</button></form>`;
+    body = connected ? `<details class="add"><summary>Change settings</summary>${form}</details>` : form;
+  }
+  const mapping = i.subjects?.length ? `<form class="stack" data-form="connMap" data-key="${i.key}"><strong class="small">Who is who</strong>
+    ${i.subjects.map((s) => `<label class="row" style="font-weight:600;color:var(--text)"><span class="grow">${esc(s.name)}${s.has_location ? "" : ` <span class="muted small">(no location)</span>`}</span>
+      <select name="${esc(s.id)}" style="width:auto">${memberOptions(i.mapping[s.id] ?? null, { none: "— not family / ignore —" })}</select></label>`).join("")}
+    <button class="small">Save who is who</button></form>` : "";
+  const actions = [
+    connected && i.connectable ? `<button class="small" data-act="connSync" data-key="${i.key}">⟳ Check now</button>` : "",
+    i.manage && i.key !== "google" && i.key !== "hub_feed" ? `<a class="btn small" href="${esc(i.manage)}">Open →</a>` : "",
+    connected && i.connectable ? `<button class="small danger" data-act="connOff" data-key="${i.key}">Disconnect</button>` : "",
+    i.docs_url ? `<a class="small" href="${esc(i.docs_url)}" target="_blank" rel="noopener">Help ↗</a>` : "",
+  ].filter(Boolean).join(" ");
+  return `<details class="card" id="conn-${i.key}" ${open ? "open" : ""} style="margin-top:10px">
+    <summary class="row" style="cursor:pointer;list-style:none"><strong class="grow">${esc(i.name)}</strong>${AVAIL_CHIP[i.availability] || ""}${STATE_CHIP[i.state] || ""}</summary>
+    <div class="stack" style="margin-top:10px"><div class="small">${esc(i.summary)}</div>
+      ${i.detail ? `<div class="small ${i.state === "attention" ? "" : "muted"}" style="${i.state === "attention" ? "color:var(--warn)" : ""}">${esc(i.detail)}${i.last_sync_at ? ` · checked ${ago(i.last_sync_at)}` : ""}</div>` : ""}
+      ${i.steps?.length && !connected ? `<ol class="small" style="margin:0;padding-left:20px">${i.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : ""}
+      ${body}${mapping}${actions ? `<div class="row">${actions}</div>` : ""}</div></details>`;
+}
+
+function googleBody(i, d, fam) {
+  if (!d.google_configured) {
+    return `<ol class="small" style="margin:0;padding-left:20px">
+      <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console</a> → create a project (free).</li>
+      <li>APIs &amp; Services → Library → enable <strong>Google Calendar API</strong>, <strong>Google Drive API</strong>, <strong>Gmail API</strong>.</li>
+      <li>OAuth consent screen → External → add your email → <strong>Publish app</strong> (status “In production”, no review needed for family use).</li>
+      <li>Credentials → Create OAuth client ID → Web application → Authorized redirect URI:<div class="copy">${esc(d.google_redirect_uri)}</div></li>
+      <li>Put the client ID and secret in <code>~/FamilyHub/family-hub.env</code> and re-run <code>mac/setup.sh</code>. Then come back here.</li></ol>
+      <div class="small muted">Want Google today without this? Add your Google Calendar's secret iCal link under “Calendar links” and use “Gmail alerts (app password)”.</div>`;
+  }
+  if (i.state === "off") return `<button class="primary" data-act="connectGoogle">Connect Google</button>`;
+  return `<label>Calendar ID<input data-act="gcalId" value="${esc((i.options && i.options.calendar_id) || "primary")}"></label>
+    <label>Save attachments to<select data-act="fileStorage"><option value="google">Google Drive</option>
+      <option value="local" ${fam.settings.file_storage === "local" ? "selected" : ""}>The hub's Mac (iCloud Drive folder)</option></select></label>
+    <div class="row"><button class="small" data-act="syncCal">⟳ Sync calendar</button><button class="small danger" data-act="disconnect" data-provider="google">Disconnect</button></div>`;
+}
+
+function feedBody(d) {
+  const webcal = (u) => u.replace(/^https?:\/\//, "webcal://");
+  const rows = [["Whole family", d.calendar_feed], ...S.members.map((m) => [m.name, `${d.calendar_feed}?member=${m.id}`])];
+  return `<div class="small">On an <strong>iPhone</strong>, tap a link below and choose <em>Subscribe</em>. In <strong>Google Calendar</strong> use the Google link,
+    or Other calendars → + → From URL and paste the address.</div>
+    <div class="list">${rows.map(([n, u]) => `<div class="item small"><strong class="grow">${esc(n)}</strong>
+      <a class="btn small" href="${esc(webcal(u))}">📱 iPhone</a>
+      <a class="btn small" href="https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal(u))}" target="_blank" rel="noopener">Google</a></div>`).join("")}</div>
+    <div class="copy">${esc(d.calendar_feed)}</div>
+    <div class="small muted">Includes hub events, homework due dates, appointments, health reminders and birthdays. iPhone refreshes about hourly; Google every few hours.</div>`;
+}
+
+// ---------- "More" (phone tab bar overflow)
+
+VIEWS.more = async () => {
+  const items = NAV.filter((n) => !n.tab && (!n.parent || isParent()));
+  return `<div class="top"><h1 class="grow">More</h1></div>
+    <div class="grid">${items.map((n) => `<a class="card row" href="#${n.id}" style="text-decoration:none;color:inherit">
+      <span style="font-size:24px">${n.ico}</span><strong class="grow">${n.label}</strong>${n.id === "alerts" && S.unread ? `<span class="badge">${S.unread}</span>` : ""}</a>`).join("")}</div>`;
+};
+
+// ---------- settings
+
+const CHANNEL_FORMS = {
+  imessage: { label: "iMessage / text from the Mac (free)", fields: [["to", "Phone numbers or Apple ID emails, comma separated"]] },
+  ntfy: { label: "Push (ntfy app — iPhone & Android)", fields: [["topic", "Topic (make it hard to guess)"], ["server", "Server (blank = ntfy.sh)"], ["token", "Access token (optional)"]] },
+  twilio_sms: { label: "Text message (SMS via Twilio — Google Messages & iMessage)", fields: [["account_sid", "Account SID"], ["auth_token", "Auth token"], ["from_number", "From number (+1…)"], ["to_numbers", "To numbers, comma separated"]] },
+  gmail: { label: "Email (via connected Gmail)", fields: [["to", "Send to (comma separated)"]] },
+  google_chat: { label: "Google Chat space (webhook)", fields: [["webhook_url", "Space webhook URL"]] },
+  webhook: { label: "Webhook (Home Assistant, IFTTT, Pushcut…)", fields: [["url", "URL"]] },
+};
+
+VIEWS.settings = async () => {
+  const kidOnly = `<div class="top"><h1 class="grow">Settings</h1></div>${pushCard()}
+    <div class="card stack" style="margin-top:10px"><label>My color<input type="color" data-act="myColor" value="${esc(S.me.color)}"></label>
+    <label class="inline"><input type="checkbox" data-act="myShare" ${S.me.share_location ? "checked" : ""}> Share my location with my parents</label>
+    <button data-act="signOut">Sign out</button></div>`;
+  if (!isParent()) return kidOnly;
+  const [fam, channels] = await Promise.all([api("GET", "/api/family"), api("GET", "/api/notify/channels")]);
+  const flash = new URLSearchParams(location.hash.split("?")[1] || "").get("google");
+  const kind = CHANNEL_FORMS[localStore("fh_ch_kind")] ? localStore("fh_ch_kind") : "imessage";
+  return `<div class="top"><h1 class="grow">Settings</h1></div>
+    ${flash ? `<div class="banner ${flash === "connected" ? "info" : "critical"}">Google: ${esc(flash)}</div>` : ""}
+    ${pushCard()}
+    <h2>Family members</h2><div class="list">${S.members.map((m) => `<div class="item">${avatar(m)}<div class="grow"><div class="title">${esc(m.name)}</div>
+      <div class="small muted">${m.role === "parent" ? esc(m.email || "Parent") : `Kid · ${m.has_pin ? "PIN set" : "no PIN"} · ${money(m.weekly_allowance_cents)}/wk`}</div></div>
+      ${m.role === "child" ? `<button class="small" data-act="editKid" data-id="${m.id}">Edit</button>` : ""}
+      ${m.id !== S.me.id ? `<button class="small danger" data-act="delMember" data-id="${m.id}">Remove</button>` : ""}</div>`).join("")}</div>
+    <details class="add card" id="memberForm"><summary>+ Add a family member</summary><form class="stack" data-form="addMember"><div class="fields">
+      <label>Name<input name="name" required></label>
+      <label>Role<select name="role"><option value="child">Kid</option><option value="parent">Parent</option></select></label>
+      <label>PIN (kids, 4–8 digits)<input name="pin" inputmode="numeric" pattern="[0-9]{4,8}"></label>
+      <label>Email (parents)<input name="email" type="email"></label>
+      <label>Password (parents)<input name="password" type="password" minlength="8"></label>
+      <label>Weekly allowance ($)<input name="allowance" type="number" step="0.25" min="0" value="0"></label>
+      <label>Birthday<input name="birthday" type="date"></label>
+      <label>Color<input name="color" type="color" value="#E07A3F"></label></div>
+      <button class="primary">Add</button></form></details>
+    <div class="card" style="margin-top:10px">Kids sign in on their own phone or tablet with the family code
+      <strong class="copy" style="font-size:15px">${esc(fam.join_code)}</strong> and their PIN.</div>
+
+    <a href="#connections" class="card row" style="margin-top:16px;text-decoration:none;color:inherit"><span style="font-size:24px">🔌</span>
+      <div class="grow"><strong>Connections</strong><div class="small muted">Google, iCloud, Find My, Google Maps, iMessage, email, calendar links, locks — everything in one checklist.</div></div><span>›</span></a>
+
+    <h2>Where alerts go</h2><div class="list">${channels.map((c) => `<div class="item"><div class="grow"><div class="title">${esc(c.label)}</div>
+      <div class="small muted">${esc(CHANNEL_FORMS[c.kind]?.label || c.kind)} · ${c.min_severity}+${c.kinds.length ? " · " + c.kinds.join(", ") : ""}</div></div>
+      <button class="small" data-act="testCh" data-id="${c.id}">Test</button>
+      <button class="small ${c.enabled ? "" : "primary"}" data-act="toggleCh" data-id="${c.id}" data-on="${c.enabled ? 0 : 1}">${c.enabled ? "Pause" : "Resume"}</button>
+      <button class="small danger" data-act="delCh" data-id="${c.id}">✕</button></div>`).join("") || `<div class="empty">Alerts only show in the app until you add a channel.</div>`}</div>
+    <details class="add card"><summary>+ Send alerts somewhere</summary><form class="stack" data-form="addChannel">
+      <label>Type<select name="kind" data-act="chKind">${Object.entries(CHANNEL_FORMS).map(([k, v]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${v.label}</option>`).join("")}</select></label>
+      <div class="fields"><label>Label<input name="label" required value="${esc(CHANNEL_FORMS[kind].label.split(" (")[0])}"></label>
+      ${CHANNEL_FORMS[kind].fields.map(([f, l]) => `<label>${l}<input name="cfg_${f}" ${["server", "token"].includes(f) ? "" : "required"}></label>`).join("")}
+      <label>Send when at least<select name="min_severity"><option value="info">Info (everything)</option><option value="warning" selected>Warning</option><option value="critical">Critical only</option></select></label></div>
+      <button class="primary">Add channel</button></form></details>
+
+    <h2>Family</h2><form class="card stack" data-form="family"><div class="fields">
+      <label>Family name<input name="name" value="${esc(fam.name)}"></label>
+      <label>Time zone<input name="timezone" value="${esc(fam.timezone)}"></label>
+      <label>Allowance day<select name="allowance_weekday">${WEEKDAYS.map((d, i) => `<option value="${i}" ${(fam.settings.allowance_weekday ?? 5) === i ? "selected" : ""}>${d}</option>`).join("")}</select></label>
+      <label>Daily digest at (hour, 0–23)<input name="digest_hour" type="number" min="0" max="23" value="${fam.settings.digest_hour ?? 17}"></label></div>
+      <button class="primary">Save</button></form>
+
+    <h2>Webhooks</h2><div class="card stack small">
+      <div>Lock events<div class="copy">${esc(fam.webhooks.lock)}</div></div>
+      <div>Location (OwnTracks HTTP mode, or any app; replace &lt;member id&gt;)<div class="copy">${esc(fam.webhooks.location)}</div>
+        <div class="muted">Member IDs: ${S.members.map((m) => `${esc(m.name)} = ${m.id}`).join(", ")}</div></div>
+      <div>Custom alert (garage, water leak, doorbell…)<div class="copy">${esc(fam.webhooks.alert)}</div></div>
+      <div class="muted">Anyone with these URLs can post events. If one leaks, rotate them.</div>
+      <div><button class="small danger" data-act="rotateHooks">Rotate webhook URLs</button></div></div>
+    <p><button data-act="signOut">Sign out</button></p>`;
+};
+
+// ------------------------------------------------------------------ actions
+
+const ACT = {
+  authMode: (d) => { S.authMode = d.mode; render(); },
+  pickKid: (d) => { S.pickedKid = Number(d.id); render(); },
+  forgetFamily: () => { S.kidList = null; S.pickedKid = null; S.joinCode = null; localStore("fh_join", null); render(); },
+  signOut: () => signOut(),
+  complete: async (d) => {
+    const r = await api("POST", `/api/chores/instances/${d.id}/complete`);
+    toast(r.status === "approved" ? `Nice! +${r.points} points` : "Sent to a parent for approval 👍");
+  },
+  review: async (d) => { await api("POST", `/api/chores/instances/${d.id}/review`, { approve: d.ok === "1" }); },
+  choreDay: (d) => { S.choreDay = addDays(S.choreDay, Number(d.delta)); },
+  delChore: async (d) => { if (confirm("Remove this chore?")) await api("DELETE", `/api/chores/${d.id}`); },
+  redeem: async (d) => { await api("POST", `/api/rewards/${d.id}/redeem`); toast("Request sent! 🎉"); },
+  decide: async (d) => { await api("POST", `/api/redemptions/${d.id}/decide`, { fulfill: d.ok === "1" }); },
+  delReward: async (d) => { await api("DELETE", `/api/rewards/${d.id}`); },
+  delEvent: async (d) => { if (confirm("Delete this event?")) await api("DELETE", `/api/events/${d.id}`); },
+  syncCal: async () => {
+    const r = await api("POST", "/api/events/sync");
+    toast(Object.entries(r).map(([k, v]) => v.error ? `${k}: ${v.error}` : (v.message ? `${k}: ${v.message}` : `${k}: ${v.pulled} in, ${v.pushed} out`)).join(" · "));
+  },
+  hwCycle: async (d) => {
+    const next = { todo: "in_progress", in_progress: "done", done: "todo" }[d.status];
+    await api("PATCH", `/api/homework/${d.id}`, { status: next });
+    if (next === "done") toast("Homework done! 🎓");
+  },
+  delMilestone: async (d) => { if (confirm("Delete this milestone?")) await api("DELETE", `/api/milestones/${d.id}`); },
+  month: (d) => { const [y, m] = S.month.split("-").map(Number); const dt = new Date(y, m - 1 + Number(d.delta), 1); S.month = ymd(dt).slice(0, 7); },
+  delTx: async (d) => { if (confirm("Delete this transaction?")) await api("DELETE", `/api/finance/transactions/${d.id}`); },
+  delHealth: async (d) => { if (confirm("Delete this record?")) await api("DELETE", `/api/health/${d.id}`); },
+  toggleShare: () => { if (S.watchId != null) stopSharing(); else startSharing(); },
+  focus: (d) => { S.map?.setView([Number(d.lat), Number(d.lng)], 16); return "noRender"; },
+  delFence: async (d) => { if (confirm("Remove this place?")) await api("DELETE", `/api/geofences/${d.id}`); },
+  lockCmd: async (d) => {
+    if (d.action === "unlock" && !confirm("Unlock the door?")) return "noRender";
+    await api("POST", `/api/locks/${d.id}/command`, { action: d.action });
+    toast(d.action === "lock" ? "Locked 🔒" : "Unlocked 🔓");
+  },
+  delLock: async (d) => { if (confirm("Remove this lock?")) await api("DELETE", `/api/locks/${d.id}`); },
+  read: async (d) => { await api("POST", `/api/alerts/${d.id}/read`); S.unread = Math.max(0, S.unread - 1); },
+  readAll: async () => { await api("POST", "/api/alerts/read-all"); S.unread = 0; },
+  connectGoogle: async () => { location.href = (await api("GET", "/api/integrations/google/start")).url; return "noRender"; },
+  disconnect: async (d) => { if (confirm(`Disconnect ${d.provider}?`)) await api("DELETE", `/api/integrations/${d.provider}`); },
+  testCh: async (d) => { await api("POST", `/api/notify/channels/${d.id}/test`); toast("Test sent ✔"); return "noRender"; },
+  toggleCh: async (d) => { await api("PATCH", `/api/notify/channels/${d.id}`, { enabled: d.on === "1" }); },
+  delCh: async (d) => { if (confirm("Remove this channel?")) await api("DELETE", `/api/notify/channels/${d.id}`); },
+  delMember: async (d) => {
+    if (!confirm(`Remove ${nameOf(Number(d.id))} and all of their records?`)) return "noRender";
+    await api("DELETE", `/api/members/${d.id}`);
+    S.members = await api("GET", "/api/members");
+  },
+  editKid: async (d) => {
+    const m = member(Number(d.id));
+    const pin = prompt(`New PIN for ${m.name} (leave blank to keep):`, "");
+    if (pin === null) return "noRender";
+    const allowance = prompt("Weekly allowance in $:", (m.weekly_allowance_cents / 100).toFixed(2));
+    if (allowance === null) return "noRender";
+    const body = { weekly_allowance_cents: toCents(allowance) };
+    if (pin) body.pin = pin;
+    await api("PATCH", `/api/members/${m.id}`, body);
+    S.members = await api("GET", "/api/members");
+    toast("Saved");
+  },
+  enablePush: () => enablePush(),
+  disablePush: () => disablePush(),
+  testPush: async () => { const r = await api("POST", "/api/push/test"); toast(r.sent ? "Test sent 🔔" : "No subscribed device; turn notifications off and on again"); return "noRender"; },
+  dismissPushNag: () => { localStore("fh_push_nag", "1"); },
+  setMacs: async (d) => {
+    const m = member(Number(d.id));
+    const v = prompt(`${m.name}'s phone Wi-Fi address(es), comma separated (e.g. 4a:1b:2c:3d:4e:5f):`, m.wifi_macs.join(", "));
+    if (v === null) return "noRender";
+    await api("PATCH", `/api/members/${m.id}`, { wifi_macs: v.split(",").map((x) => x.trim()).filter(Boolean) });
+    S.members = await api("GET", "/api/members");
+  },
+  scanLan: async () => {
+    $("#lanList").innerHTML = `<div class="small muted">Scanning…</div>`;
+    const devs = await api("GET", "/api/presence/devices");
+    $("#lanList").innerHTML = `<div class="list">${devs.map((d) => `<div class="item small"><div class="grow"><strong>${esc(d.name || "Unknown device")}</strong>
+      <div class="muted">${esc(d.ip)} · ${esc(d.mac)}</div></div>${d.member ? `<span class="chip good">${esc(d.member)}</span>` : ""}</div>`).join("") || `<div class="empty">Nothing found.</div>`}</div>`;
+    return "noRender";
+  },
+  connSync: async (d) => { const r = await api("POST", `/api/connectors/${d.key}/sync`); toast(r.message || "Up to date"); },
+  connOff: async (d) => { if (confirm("Disconnect this?")) { await api("DELETE", `/api/connectors/${d.key}`); delete S.connStep[d.key]; } else return "noRender"; },
+  dose: async (d) => {
+    await api("POST", `/api/meds/${d.id}/dose`, { slot: d.slot, status: d.status });
+    toast(d.status === "taken" ? "Marked as taken ✓" : "Skipped");
+  },
+  goalMove: async (d) => {
+    const label = { deposit: "How much to add from the wallet? ($)", gift: "Gift amount ($)", withdraw: "How much to take out? ($)" }[d.kind];
+    const v = prompt(label, "5");
+    if (!v) return "noRender";
+    const path = d.kind === "withdraw" ? "withdraw" : "deposit";
+    const g = await api("POST", `/api/finance/goals/${d.id}/${path}`, { amount_cents: toCents(v), gift: d.kind === "gift" });
+    toast(g.status === "reached" ? "🎉 Goal reached!" : `${g.percent}% there`);
+    S.members = await api("GET", "/api/members");
+  },
+  goalSpend: async (d) => { if (!confirm("Mark this goal as bought?")) return "noRender"; await api("POST", `/api/finance/goals/${d.id}/spend`); toast("Enjoy! 🛍️"); },
+  goalMatch: async (d) => {
+    const v = prompt("Parents add what % of every amount saved? (0 = no match)", d.pct);
+    if (v === null) return "noRender";
+    await api("PATCH", `/api/finance/goals/${d.id}`, { match_percent: Number(v) || 0 });
+  },
+  goalClose: async (d) => { if (!confirm("Cancel this goal? Saved money goes back to the wallet.")) return "noRender"; await api("DELETE", `/api/finance/goals/${d.id}`); },
+  rotateHooks: async () => {
+    if (!confirm("Old webhook URLs will stop working. Update your automations afterwards. Continue?")) return "noRender";
+    await api("POST", "/api/family/rotate-hook-token");
+  },
+};
+
+const CHANGE = {
+  healthKind: (el) => { el.form.dataset.kind = el.value; return "noRender"; },
+  fileStorage: async (el) => { await api("PATCH", "/api/family", { settings: { file_storage: el.value } }); toast("Saved"); return "noRender"; },
+  wifiPresence: async (el) => { await api("PATCH", "/api/family", { settings: { wifi_presence: el.checked } }); toast(el.checked ? "Watching home Wi-Fi" : "Wi-Fi presence off"); return "noRender"; },
+  scMember: (el) => localStore("fh_sc_member", el.value),
+  scPlace: (el) => localStore("fh_sc_place", el.value),
+  toggleHwDone: (el) => localStore("fh_hw_done", el.checked ? "1" : null),
+  healthMember: (el) => localStore("fh_health_member", el.value || null),
+  chKind: (el) => localStore("fh_ch_kind", el.value),
+  gcalId: async (el) => { await api("PATCH", "/api/integrations/google", { calendar_id: el.value || "primary" }); toast("Calendar updated; it syncs within 15 min"); return "noRender"; },
+  myColor: async (el) => { await api("PATCH", `/api/members/${S.me.id}`, { color: el.value }); S.me = null; },
+  myShare: async (el) => { await api("PATCH", `/api/members/${S.me.id}`, { share_location: el.checked }); if (!el.checked) stopSharing(); S.me = null; },
+};
+
+async function connResult(key, r) {
+  if (r.step === "redirect" && r.url) { location.href = r.url; return "noRender"; }
+  if (r.ok) { delete S.connStep[key]; toast(r.message || "Connected ✅"); }
+  else S.connStep[key] = r;
+}
+
+const FORMS = {
+  addGoal: async (f) => {
+    await api("POST", "/api/finance/goals", { member_id: Number(f.member_id), title: f.title, icon: f.icon || "🎯",
+      target_cents: toCents(f.target), match_percent: f.match_percent ?? 0 });
+    toast("Goal created 🎯");
+  },
+  connect: async (f, form) => connResult(form.dataset.key, await api("POST", `/api/connectors/${form.dataset.key}/connect`, { values: f })),
+  connFinish: async (f, form) => connResult(form.dataset.key, await api("POST", `/api/connectors/${form.dataset.key}/finish`, { values: f })),
+  connMap: async (f, form) => {
+    const map = {};
+    for (const [k, v] of Object.entries(f)) map[k] = intOrNull(v);
+    await api("PUT", `/api/connectors/${form.dataset.key}/map`, { map });
+    toast("Saved — locations update on the next check");
+  },
+  login: async (f) => afterAuth(await api("POST", "/api/auth/login", f)),
+  signup: async (f) => afterAuth(await api("POST", "/api/auth/signup", f)),
+  joinCode: async (f) => {
+    S.kidList = await api("GET", `/api/auth/join/${encodeURIComponent(f.code)}`);
+    S.joinCode = f.code.toUpperCase(); localStore("fh_join", S.joinCode);
+    render();
+    return "noRender";
+  },
+  pinLogin: async (f) => afterAuth(await api("POST", "/api/auth/pin-login", { join_code: S.joinCode, member_id: S.pickedKid, pin: f.pin })),
+  addChore: async (f) => {
+    await api("POST", "/api/chores", { title: f.title, points: f.points ?? 0, assignee_id: intOrNull(f.assignee_id), recurrence: f.recurrence,
+      weekdays: f.weekdays || [], start_date: f.start_date || null, requires_approval: f.requires_approval,
+      requires_photo: f.requires_photo });
+    toast("Chore added");
+  },
+  addReward: async (f) => { await api("POST", "/api/rewards", f); toast("Reward added"); },
+  adjust: async (f) => { await api("POST", "/api/points/adjust", { ...f, member_id: Number(f.member_id) }); S.members = await api("GET", "/api/members"); },
+  addEvent: async (f) => {
+    const allDay = f.all_day;
+    const start = allDay ? `${f.start.slice(0, 10)}T00:00:00` : new Date(f.start).toISOString();
+    const end = f.end ? (allDay ? `${f.end.slice(0, 10)}T00:00:00` : new Date(f.end).toISOString()) : null;
+    await api("POST", "/api/events", { title: f.title, start, end, all_day: allDay, location: f.location, member_ids: f.member_ids || [], push_to: f.push_to || [] });
+    toast("Event added");
+  },
+  addHomework: async (f) => {
+    await api("POST", "/api/homework", { member_id: isParent() ? Number(f.member_id) : S.me.id, subject: f.subject, title: f.title, due_date: f.due_date, points: f.points ?? 0 });
+    toast("Homework added");
+  },
+  addMilestone: async (f) => { await api("POST", "/api/milestones", { ...f, member_id: intOrNull(f.member_id) }); toast("Milestone saved ⭐"); },
+  kidSpend: async (f) => { await api("POST", "/api/finance/transactions", { amount_cents: -toCents(f.amount), member_id: S.me.id, category: "spending", description: f.description }); },
+  addTx: async (f) => {
+    const cents = toCents(f.amount) * (f.kind === "out" ? -1 : 1);
+    await api("POST", "/api/finance/transactions", { amount_cents: cents, category: f.category, description: f.description, date: f.date || null, member_id: intOrNull(f.member_id) });
+  },
+  setBudget: async (f) => { await api("PUT", "/api/finance/budgets", { category: f.category, monthly_limit_cents: toCents(f.limit) }); },
+  addHealth: async (f) => {
+    const times = (f.reminder_times || "").split(/[,\s]+/).filter(Boolean);
+    const body = { ...f, member_id: Number(f.member_id), date: f.date || null, next_due: f.next_due || null,
+      reminder_times: f.kind === "medication" ? times : [], reminder_days: f.kind === "medication" ? (f.reminder_days || []) : [],
+      reminder_until: f.kind === "medication" ? (f.reminder_until || null) : null };
+    await api("POST", "/api/health", body);
+    if (times.length && f.kind === "medication") toast(`Reminders set for ${times.join(", ")} 💊`);
+  },
+  addFence: async (f) => { await api("POST", "/api/geofences", f); toast("Place saved"); },
+  doorRules: async (f) => { await api("PATCH", "/api/family", { settings: f }); toast("Rules saved"); },
+  addLock: async (f) => { await api("POST", "/api/locks", f); toast("Lock added"); },
+  addMember: async (f) => {
+    const body = { name: f.name, role: f.role, color: f.color, weekly_allowance_cents: toCents(f.allowance), birthday: f.birthday || null };
+    if (f.role === "child") body.pin = f.pin; else { body.email = f.email; body.password = f.password; }
+    await api("POST", "/api/members", body);
+    S.members = await api("GET", "/api/members");
+    toast(`${f.name} added`);
+  },
+  addChannel: async (f) => {
+    const config = {};
+    for (const [k, v] of Object.entries(f)) if (k.startsWith("cfg_") && v) config[k.slice(4)] = v;
+    await api("POST", "/api/notify/channels", { kind: f.kind, label: f.label, min_severity: f.min_severity, config });
+    toast("Channel added — try Test");
+  },
+  family: async (f) => {
+    await api("PATCH", "/api/family", { name: f.name, timezone: f.timezone,
+      settings: { allowance_weekday: Number(f.allowance_weekday), digest_hour: f.digest_hour ?? 17 } });
+    S.me = null;
+    toast("Saved");
+  },
+};
+
+async function run(fn, ...args) {
+  try {
+    const r = await fn(...args);
+    if (r !== "noRender") await refresh();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-act]");
+  if (!el || el.tagName === "SELECT" || el.type === "checkbox" || el.type === "color" || (el.tagName === "INPUT" && el.dataset.act in CHANGE)) return;
+  const fn = ACT[el.dataset.act];
+  if (!fn) return;
+  e.preventDefault();
+  if (el.tagName === "BUTTON") el.disabled = true;
+  run(fn, el.dataset, el).finally(() => { if (el.isConnected) el.disabled = false; });
+});
+
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (el.dataset.upload) { run(upload, el); return; }
+  if (el.dataset.chorePhoto) { run(choreProof, el); return; }
+  const fn = CHANGE[el.dataset.act];
+  if (fn) run(fn, el);
+});
+
+document.addEventListener("submit", (e) => {
+  const form = e.target.closest("form[data-form]");
+  if (!form) return;
+  e.preventDefault();
+  const btn = form.querySelector("button.primary");
+  if (btn) btn.disabled = true;
+  run(FORMS[form.dataset.form], formData(form), form).finally(() => { if (btn?.isConnected) btn.disabled = false; });
+});
+
+// Phone photos are 3–12 MB; shrink to ~1600px JPEG before upload (falls back to the original if the
+// browser can't decode it, e.g. some HEIC files).
+async function shrinkImage(file, max = 1600) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.82));
+    return blob ? new File([blob], "chore.jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    return file;
+  }
+}
+
+async function choreProof(input) {
+  const file = input.files[0];
+  if (!file) return "noRender";
+  toast("Sending your photo…");
+  const fd = new FormData();
+  fd.append("file", await shrinkImage(file));
+  const r = await api("POST", `/api/chores/instances/${input.dataset.chorePhoto}/photo`, fd);
+  toast(r.status === "approved" ? `Nice! +${r.points} points` : "Sent to a parent for approval 👍");
+}
+
+async function upload(input) {
+  const file = input.files[0];
+  if (!file) return "noRender";
+  const fd = new FormData();
+  fd.append("file", file);
+  toast("Uploading…");
+  await api("POST", `/api/attachments/${input.dataset.upload}/${input.dataset.id}`, fd);
+  toast("Saved 📎");
+}
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest(".copy");
+  if (!el || !navigator.clipboard) return;
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => toast("Copied")).catch(() => {});
+});
+
+window.addEventListener("hashchange", render);
+// Keep the dashboard and alert badge fresh while the app is open.
+setInterval(() => {
+  if (!S.me || document.hidden || document.querySelector("form :focus, details[open]")) return;
+  if (["today", "alerts", "map", "home"].includes(currentView())) refresh();
+}, 60000);
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+
+if (S.joinCode && !S.token) {
+  S.authMode = "kid";
+  api("GET", `/api/auth/join/${encodeURIComponent(S.joinCode)}`).then((r) => { S.kidList = r; render(); }).catch(() => render());
+}
+render();
