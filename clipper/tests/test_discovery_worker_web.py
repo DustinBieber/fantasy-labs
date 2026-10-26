@@ -174,3 +174,28 @@ def test_discover_scores_leads_and_skips_existing_clients(cfg, db, monkeypatch):
     assert lead["channel_id"] == "UCnew" and lead["status"] == "qualified" and lead["score"] == 100
     # a second run within two weeks doesn't re-inspect known channels
     assert discovery.discover(cfg, db) == 0
+
+
+def test_run_now_wakes_the_worker_early(cfg, db, monkeypatch):
+    import threading
+    import time
+
+    from clipper.db import DB
+    calls = []
+    monkeypatch.setattr(worker, "tick", lambda cfg, db, force=False: calls.append(force) or {})
+    cfg.worker.tick_seconds = 3600
+    stop = threading.Event()
+    t = threading.Thread(target=worker.run_forever, args=(cfg, DB(cfg.db_path), stop), daemon=True)
+    t.start()
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.1)
+    assert calls == [False]                      # first scheduled pass
+    worker.request_run(db)
+    for _ in range(100):                         # the loop polls every 5s at most
+        if len(calls) > 1:
+            break
+        time.sleep(0.1)
+    stop.set()
+    assert calls[1] is True and db.get_kv(worker.RUN_NOW_KEY) == "0"

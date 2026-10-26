@@ -74,17 +74,32 @@ def tick(cfg: Config, db: DB, force: bool = False) -> dict:
     return stats
 
 
+RUN_NOW_KEY = "worker.run_now"
+
+
+def request_run(db: DB) -> None:
+    """Ask the running service for an immediate pass (used by `clipper run-now`)."""
+    db.set_kv(RUN_NOW_KEY, "1")
+
+
 def run_forever(cfg: Config, db: DB, stop: threading.Event | None = None) -> None:
     stop = stop or threading.Event()
     publish.recover_interrupted(db)
     db.log("worker", "worker started")
     log.info("worker started; active %s %s (%s)", cfg.worker.active_hours, ",".join(cfg.worker.active_days), cfg.worker.timezone)
     while not stop.is_set():
+        force = db.get_kv(RUN_NOW_KEY) == "1"
+        if force:
+            db.set_kv(RUN_NOW_KEY, "0")
+            db.log("worker", "run-now requested: starting a pass outside the normal schedule")
         try:
             with WORK_LOCK:
-                stats = tick(cfg, db)
+                stats = tick(cfg, db, force=force)
             if stats.get("processed") or stats.get("posted") or stats.get("queued"):
                 log.info("tick: %s", stats)
         except Exception:
             log.exception("worker tick crashed")
-        stop.wait(cfg.worker.tick_seconds)
+        # Sleep until the next tick, but wake early for a run-now request.
+        deadline = time.time() + cfg.worker.tick_seconds
+        while not stop.is_set() and time.time() < deadline and db.get_kv(RUN_NOW_KEY) != "1":
+            stop.wait(min(5, cfg.worker.tick_seconds))

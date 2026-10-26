@@ -22,20 +22,18 @@ Two guardrails are built into the code:
 
 ## 1. One-time setup (about 15 minutes)
 
-On the Mac mini:
+On the Mac mini, paste this into Terminal (device-by-device steps are in [`SETUP.md`](SETUP.md)):
 
 ```bash
-git clone -b claude/dazzling-brown-2azho8 https://github.com/DustinBieber/fantasy-labs.git ~/fantasy-labs
-cd ~/fantasy-labs/sandbox
-./sandbox.sh setup native     # fastest on Apple Silicon.  Or: ./sandbox.sh setup  (Docker)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/sandbox/bootstrap.sh)"
 ```
 
-**Docker mode** needs a Docker runtime: Docker Desktop (free for personal use and small businesses) or colima (free, open source).
-OrbStack works too, but it needs a paid license for commercial use. Device-by-device steps are in [`SETUP.md`](SETUP.md).
+The installer sets up native mode, which runs under launchd with Apple's hardware encoder and MLX Whisper. It also turns on
+hourly self-updates and starts the first pass. To set things up by hand, clone the repo to `~/fantasy-labs` and run
+`sandbox/sandbox.sh setup native`, or `sandbox.sh setup` for the Docker sandbox.
 
-**Native mode** installs Python and ffmpeg with Homebrew and runs under launchd. It's less isolated than Docker, but it uses Apple's
-hardware video encoder and MLX Whisper, so rendering and transcription are several times faster. Pick native if you'll process
-a lot of episodes.
+**Docker mode** needs a Docker runtime: Docker Desktop (free for personal use and small businesses) or colima (free, open source).
+OrbStack works too, but it needs a paid license for commercial use.
 
 Setup creates `~/sandbox-data/clipper/` with:
 
@@ -46,16 +44,17 @@ Setup creates `~/sandbox-data/clipper/` with:
 | `clipper.db` | SQLite: leads, episodes, clips, posts, connected accounts (tokens encrypted). |
 | `clips/`, `videos/`, `transcripts/`, `logs/` | Output. Source episodes are deleted after 3 days, clips are kept. |
 
-Then:
+If you set up by hand instead of using the installer, finish with:
 
 ```bash
 open -e ~/sandbox-data/clipper/.env     # optional: ANTHROPIC_API_KEY (leave blank for $0 mode)
-./sandbox.sh up
+./sandbox.sh restart                    # Docker mode: ./sandbox.sh up
 ./sandbox.sh doctor                     # checks ffmpeg, fonts, keys, config
+./sandbox.sh autoupdate on              # hourly self-update from GitHub
 ./sandbox.sh open                       # dashboard at http://localhost:8787
 ```
 
-Keep the Mac mini awake on workdays (one time, asks for your password):
+Keep the Mac mini awake on workdays (the installer offers this; by hand it's one time and asks for your password):
 
 ```bash
 sudo pmset -c sleep 0 disksleep 0
@@ -187,7 +186,9 @@ Instagram login*. Add the redirect `/oauth/instagram/callback` and the permissio
 ./sandbox.sh cli discover    # find leads now
 ./sandbox.sh cli pitch UCxxxx
 ./sandbox.sh cli spend
-./sandbox.sh update          # pull new code + latest yt-dlp, restart
+./sandbox.sh update          # pull new code + latest yt-dlp, restart (also runs hourly on its own)
+./sandbox.sh run-now         # start a pass now, even outside work hours
+./sandbox.sh autoupdate off  # stop the hourly self-update
 ```
 
 ## 8. Leads and outreach

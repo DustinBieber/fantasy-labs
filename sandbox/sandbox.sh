@@ -94,6 +94,7 @@ cmd_setup() {
     compose run --rm --no-deps clipper clipper init
     install_fonts
   fi
+  [ -n "${SANDBOX_BOOTSTRAP:-}" ] && return 0
   local start="$0 up"
   [ "$want" = native ] && start="$0 restart   (it's already running; this loads your edits)"
   cat <<EOF
@@ -188,16 +189,61 @@ cmd_status() {
 }
 
 cmd_update() {
-  say "Pulling the latest code"
-  git -C "$REPO" pull --ff-only
+  local quiet="${1:-}" branch before after stamp ytdlp_due=""
+  branch="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
+  git -C "$REPO" fetch -q origin "$branch"
+  before="$(git -C "$REPO" rev-parse HEAD)"
+  after="$(git -C "$REPO" rev-parse "origin/$branch")"
+  stamp="$SANDBOX_DATA/.ytdlp-updated"           # YouTube changes often; refresh yt-dlp once a day
+  if [ ! -f "$stamp" ] || [ -n "$(find "$stamp" -mtime +0 2>/dev/null)" ]; then ytdlp_due=1; fi
+  if [ "$quiet" = "--if-changed" ] && [ "$before" = "$after" ] && [ -z "$ytdlp_due" ]; then
+    return 0
+  fi
+  echo "$(date '+%F %T') update: ${before:0:7} -> ${after:0:7}${ytdlp_due:+ (+ yt-dlp refresh)}"
+  git -C "$REPO" merge -q --ff-only "origin/$branch" || die "Local edits block the update. See: git -C $REPO status"
   if [ "$(mode)" = native ]; then
     "$VENV/bin/pip" install -q -e "$REPO/clipper$(extras_spec)"
-    "$VENV/bin/pip" install -q --upgrade yt-dlp
-    launchctl kickstart -k "gui/$(id -u)/$LABEL"
+    if [ -n "$ytdlp_due" ]; then "$VENV/bin/pip" install -q --upgrade "yt-dlp[default]" && touch "$stamp"; fi
+    if agent_loaded; then launchctl kickstart -k "gui/$(id -u)/$LABEL"; fi
   else
-    compose build --pull --no-cache clipper   # also picks up the newest yt-dlp
+    if [ -n "$ytdlp_due" ]; then compose build --pull --no-cache clipper && touch "$stamp"; else compose build clipper; fi
     compose up -d
   fi
+}
+
+UPDATE_LABEL="com.fantasylabs.sandbox-update"
+UPDATE_PLIST="$HOME/Library/LaunchAgents/$UPDATE_LABEL.plist"
+
+cmd_autoupdate() {
+  if [ "${1:-on}" = off ]; then
+    launchctl bootout "gui/$(id -u)/$UPDATE_LABEL" 2>/dev/null || true
+    rm -f "$UPDATE_PLIST"
+    say "Auto-update off"
+    return 0
+  fi
+  mkdir -p "$DATA/logs" "$(dirname "$UPDATE_PLIST")"
+  cat > "$UPDATE_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$UPDATE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>$HERE/sandbox.sh</string><string>update</string><string>--if-changed</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>SANDBOX_DATA</key><string>$SANDBOX_DATA</string>
+  </dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>StandardOutPath</key><string>$DATA/logs/update.log</string>
+  <key>StandardErrorPath</key><string>$DATA/logs/update.log</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$(id -u)/$UPDATE_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
+  say "Auto-update on: checks GitHub hourly and restarts only when something changed (log: $DATA/logs/update.log)"
 }
 
 usage() {
@@ -210,6 +256,8 @@ Fantasy Labs sandbox
   $0 status | logs           health and logs
   $0 doctor                  check tools, keys and config
   $0 update                  pull code, update yt-dlp, restart
+  $0 autoupdate [on|off]      hourly self-update from GitHub (on by default after bootstrap)
+  $0 run-now                 start a clipping pass now, even outside work hours
   $0 open                    open the dashboard
   $0 cli <args>              any clipper command, e.g. '$0 cli sync' or '$0 cli review'
   $0 native-install | native-uninstall
@@ -228,7 +276,9 @@ case "$cmd" in
   logs) cmd_logs ;;
   status) cmd_status ;;
   doctor) clipper doctor ;;
-  update) cmd_update ;;
+  update) cmd_update ${1+"$@"} ;;
+  autoupdate) cmd_autoupdate ${1+"$@"} ;;
+  run-now) clipper run-now ;;
   open) open "http://localhost:8787" ;;
   cli) clipper ${1+"$@"} ;;
   native-install) cmd_native_install ;;

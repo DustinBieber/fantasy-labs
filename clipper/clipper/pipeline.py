@@ -126,8 +126,9 @@ def process_video(video_id: str, cfg: Config, db: DB) -> str:
                 db.update("videos", {"id": video_id}, status="skipped", error="no clip-worthy moments found",
                           transcript_source=transcript.source)
                 return "skipped"
-            save_picks(video, picks, db)
-            db.update("videos", {"id": video_id}, status="picked", transcript_source=transcript.source)
+            with db.tx():       # clips and the status change land together, so a restart can't double-pick
+                save_picks(video, picks, db)
+                db.update("videos", {"id": video_id}, status="picked", transcript_source=transcript.source)
             db.log("pick", f"{ref}: {len(picks)} clips picked ({picks[0].picker})")
             video = dict(db.one("SELECT * FROM videos WHERE id=?", (video_id,)))
         rendered = render_pending(video, transcript, cfg, db)

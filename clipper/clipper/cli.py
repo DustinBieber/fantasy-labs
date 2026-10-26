@@ -110,6 +110,17 @@ def cmd_tick(args) -> None:
     print(tick(cfg, db, force=True))
 
 
+def cmd_run_now(args) -> None:
+    from .worker import request_run
+
+    cfg, db = _ctx(args)
+    request_run(db)
+    print("Asked the running service to start a pass now. Watch the Overview page or `sandbox.sh logs`.")
+    last = db.get_kv("worker.last_tick")
+    if not last:
+        print("Note: the service hasn't checked in yet. Is it running? (sandbox.sh status)")
+
+
 def cmd_sync(args) -> None:
     from .pipeline import sync_client
 
@@ -233,7 +244,8 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--port", type=int, default=int(os.environ.get("CLIPPER_PORT", "8787")))
     sp.add_argument("--no-worker", action="store_true")
     add("worker", cmd_worker, "background worker only")
-    add("tick", cmd_tick, "run one worker pass now, ignoring work hours")
+    add("tick", cmd_tick, "run one worker pass in this process, ignoring work hours")
+    add("run-now", cmd_run_now, "ask the running service to start a pass now")
     sp = add("sync", cmd_sync, "check creators for new uploads")
     sp.add_argument("--client")
     sp = add("process", cmd_process, "transcribe, pick, download and render queued episodes")
