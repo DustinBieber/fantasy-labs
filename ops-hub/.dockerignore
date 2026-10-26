@@ -1,0 +1,8 @@
+.venv
+*.db
+*.db-*
+.env
+handoff
+__pycache__
+.pytest_cache
+*.egg-info
