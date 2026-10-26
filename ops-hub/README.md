@@ -129,3 +129,6 @@ each one gets its first real run when you add its credentials.
 * **Extensiv / Lightspeed first live run**: field names come from Extensiv's API (via an
   open-source client) and Lightspeed's V3 docs. The first sync with real credentials should be
   checked against their screens.
+* **Lightspeed purchase orders**: the API resource is `Order`, not `PurchaseOrder`. Whether our API client
+  can read it, and how to reach the back office when it can't (the Cloudflare login check fails on the agent
+  VM), are in [docs/LIGHTSPEED-FRONTEND-ACCESS.md](docs/LIGHTSPEED-FRONTEND-ACCESS.md).

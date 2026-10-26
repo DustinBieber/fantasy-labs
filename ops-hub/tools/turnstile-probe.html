@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turnstile probe</title>
+<!--
+  Diagnostic page for docs/LIGHTSPEED-FRONTEND-ACCESS.md (Step 2).
+
+  It renders Cloudflare Turnstile with Cloudflare's published TEST sitekeys, which never touch a
+  real site and are the documented way to exercise Turnstile from automated browsers. It answers
+  one question: can this browser load and run Turnstile at all? It also lists what the browser
+  says about itself. Nothing is sent anywhere; results stay on the page until you copy them.
+
+  Serve it from localhost (test keys work there; file:// does not):
+      cd ops-hub/tools && python3 -m http.server 8765 --bind 127.0.0.1
+      open http://localhost:8765/turnstile-probe.html
+-->
+<style>
+  :root { --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --ok: #1a7f37; --bad: #c62828; --warn: #9a6700; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161617; --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --ok: #4ac26b; --bad: #ff6b6b; --warn: #e3b341; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 -apple-system, system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 24px 0 8px; }
+  p, li { color: var(--muted); }
+  .widget { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .widget b { color: var(--fg); }
+  .status { font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  pre { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; margin-right: 8px; }
+</style>
+<script>
+  // Must exist before api.js loads (it calls back by name).
+  window.probe = { started: new Date().toISOString(), script: "loading", widgets: {}, environment: null };
+  window.onTurnstileLoad = function () { probe.script = "loaded"; renderWidgets(); update(); };
+  window.onTurnstileScriptError = function () { probe.script = "failed to load"; update(); };
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad&render=explicit"
+        async defer onerror="onTurnstileScriptError()"></script>
+</head>
+<body>
+<main>
+  <h1>Turnstile probe</h1>
+  <p>Uses Cloudflare's test sitekeys only. It shows whether Turnstile can load and run in this browser, and what the
+    browser reports about itself. Nothing leaves this page.</p>
+
+  <h2>Verdict</h2>
+  <div id="verdict" class="status">Waiting for Turnstile…</div>
+
+  <h2>Widget 1: test key that always passes (no click needed)</h2>
+  <div class="widget"><div id="w-pass"></div><div>Result: <b id="r-pass">waiting</b></div></div>
+
+  <h2>Widget 2: test key that forces a checkbox (a person clicks it once)</h2>
+  <p>Checks that a click through your normal way of using this browser (the remote view, for the VM) reaches the
+    widget. An agent does not click this one.</p>
+  <div class="widget"><div id="w-interactive"></div><div>Result: <b id="r-interactive">waiting</b></div></div>
+
+  <h2>Results to send back</h2>
+  <button id="copy">Copy results</button><button id="download">Download JSON</button>
+  <pre id="out"></pre>
+</main>
+<script>
+  const KEYS = { pass: "1x00000000000000000000AA", interactive: "3x00000000000000000000FF" };
+  const MEANING = {
+    "110600": "challenge timed out (clock wrong or challenge too slow)",
+    "110620": "interaction timed out (nobody clicked in time)",
+    "200100": "clock or cache problem (clock wrong, or something between browser and Cloudflare cached the challenge)",
+    "200500": "iframe failed to load (challenges.cloudflare.com blocked or altered on the way)",
+    "300": "generic challenge failure (scored as a bot)",
+    "600": "generic challenge failure (scored as a bot)",
+  };
+  const meaning = (code) => MEANING[code] || MEANING[String(code).slice(0, 3)] || "see Cloudflare's error-code table";
+  const ms = (since) => Math.round(performance.now() - since);
+
+  function renderWidgets() {
+    for (const [name, sitekey] of Object.entries(KEYS)) {
+      const w = probe.widgets[name] = { sitekey, outcome: "rendering", events: [] };
+      const t0 = performance.now();
+      const log = (type, extra) => { w.events.push({ type, ms: ms(t0), ...extra }); update(); };
+      try {
+        turnstile.render("#w-" + name, {
+          sitekey, retry: "never",
+          callback: (token) => { w.outcome = "token received"; w.msToToken = ms(t0);
+                                 w.dummyToken = token.startsWith("XXXX.DUMMY"); log("success"); },
+          "error-callback": (code) => { w.outcome = "error " + code; w.errorCode = String(code);
+                                        w.errorMeaning = meaning(code); log("error", { code: String(code) }); return true; },
+          "expired-callback": () => log("expired"),
+          "timeout-callback": () => { w.outcome = "timed out"; log("timeout"); },
+          "unsupported-callback": () => { w.outcome = "browser reported unsupported"; log("unsupported"); },
+        });
+      } catch (e) { w.outcome = "render threw: " + e.message; update(); }
+    }
+  }
+
+  function webgl() {
+    try {
+      const gl = document.createElement("canvas").getContext("webgl");
+      if (!gl) return "unavailable";
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      return ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) + " | " + gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+                 : gl.getParameter(gl.RENDERER);
+    } catch (e) { return "error: " + e.message; }
+  }
+
+  async function environment() {
+    const uad = navigator.userAgentData;
+    let high = null;
+    if (uad && uad.getHighEntropyValues) {
+      try { high = await uad.getHighEntropyValues(["fullVersionList", "platformVersion", "architecture", "model"]); }
+      catch (e) { high = "error: " + e.message; }
+    }
+    probe.environment = {
+      userAgent: navigator.userAgent,
+      uaBrands: uad ? uad.brands.map((b) => b.brand + " " + b.version) : null,
+      uaPlatform: uad ? uad.platform : null,
+      uaHighEntropy: high,
+      webdriver: navigator.webdriver,
+      languages: navigator.languages,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      localTime: new Date().toString(),
+      screen: screen.width + "x" + screen.height, window: innerWidth + "x" + innerHeight, outer: outerWidth + "x" + outerHeight,
+      devicePixelRatio, hardwareConcurrency: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory ?? null,
+      plugins: navigator.plugins ? navigator.plugins.length : null, pdfViewerEnabled: navigator.pdfViewerEnabled ?? null,
+      cookieEnabled: navigator.cookieEnabled, windowChrome: typeof window.chrome, webAssembly: typeof WebAssembly,
+      webgl: webgl(), secureContext: isSecureContext,
+    };
+    update();
+  }
+
+  function verdict() {
+    const p = probe.widgets.pass;
+    if (probe.script.startsWith("failed"))
+      return ["bad", "Turnstile's script did not load. challenges.cloudflare.com is blocked or unreachable from this browser (supports H-NET)."];
+    if (probe.script === "loading") return ["warn", "Waiting for Turnstile's script…"];
+    if (!p || p.outcome === "rendering") return ["warn", "Script loaded; waiting for the passing test widget…"];
+    if (p.outcome === "token received")
+      return ["ok", "Turnstile loads and runs in this browser. The network path to Cloudflare's challenge platform is fine (rules out H-NET here)."];
+    return ["bad", "The always-pass test widget did not produce a token: " + p.outcome +
+                   (p.errorMeaning ? " (" + p.errorMeaning + ")" : "") + ". Test keys don't score visitors, so this points at the " +
+                   "network path or the browser itself (supports H-NET)."];
+  }
+
+  function update() {
+    if (!document.getElementById("out")) return;
+    const [cls, text] = verdict();
+    const v = document.getElementById("verdict");
+    v.className = "status " + cls; v.textContent = text;
+    for (const name of Object.keys(KEYS)) {
+      const w = probe.widgets[name];
+      const el = document.getElementById("r-" + name);
+      el.textContent = w ? w.outcome + (w.errorMeaning ? " (" + w.errorMeaning + ")" : "") : (probe.script === "loaded" ? "rendering" : probe.script);
+      el.className = w && w.outcome === "token received" ? "ok" : w && w.outcome !== "rendering" ? "bad" : "";
+    }
+    document.getElementById("out").textContent = JSON.stringify({ ...probe, verdict: text, at: new Date().toISOString() }, null, 2);
+  }
+
+  document.getElementById("copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(document.getElementById("out").textContent); }
+    catch (e) { alert("Copy failed; select the text below instead."); }
+  };
+  document.getElementById("download").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([document.getElementById("out").textContent], { type: "application/json" }));
+    a.download = "turnstile-probe-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+    a.click();
+  };
+  setTimeout(() => { if (probe.script === "loading") { probe.script = "failed to load (no response in 15s)"; update(); } }, 15000);
+  environment();
+  update();
+</script>
+</body>
+</html>
