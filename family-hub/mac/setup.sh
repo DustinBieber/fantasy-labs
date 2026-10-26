@@ -159,14 +159,15 @@ if [ -n "$TS" ]; then
     set_env FAMILY_HUB_BASE_URL "$URL"
     restart_service >/dev/null && echo "Family Hub is live at: $URL"
   else
-    warn "Tailscale Funnel didn't start. Re-run this script after enabling Funnel."
+    warn "Tailscale Funnel didn't start. Enable it with the link above, then run the install command again."
   fi
 else
   cat <<TXT
 Phones need an https:// address to install the app, get notifications and share location.
 Free option (nothing to install on the phones):
   1. Install Tailscale on this Mac: https://tailscale.com/download/mac  (free Personal plan) and sign in.
-  2. Re-run:  bash "$SRC_DIR/mac/setup.sh"
+  2. Run the install command again:
+     curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/family-hub/mac/install.sh | bash
      It turns on Tailscale Funnel and prints your permanent https://<mac>.<tailnet>.ts.net address.
 TXT
 fi

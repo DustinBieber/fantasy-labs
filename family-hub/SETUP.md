@@ -34,30 +34,25 @@ permanent `https://` address for free. Nothing needs to be installed on the S24.
 2. Open Tailscale from the menu bar, then **Log in**. Your Google account works. The Personal plan is free.
 3. Tailscale menu → **Settings** → turn on **Launch at login** (or "Run at login").
 
-### 1.3 Download Family Hub
-Open **Terminal** (Spotlight: ⌘ Space, type *Terminal*) and paste this line. It downloads the code straight from
-GitHub; no browser or GitHub sign-in is needed:
+### 1.3 Install Family Hub (one command)
+Open **Terminal** (Spotlight: ⌘ Space, type *Terminal*), paste this line and press Return:
 ```bash
-cd ~ && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip
+curl -fsSL https://raw.githubusercontent.com/DustinBieber/fantasy-labs/main/family-hub/mac/install.sh | bash
 ```
-If it says `fantasy-labs` already exists, an earlier download is in the way; run `rm -rf ~/fantasy-labs` and paste the
-line again. Your hub's data lives in `~/FamilyHub`, not here, so this is safe.
-
-### 1.4 Run the installer
-In Terminal:
-```bash
-bash ~/fantasy-labs/family-hub/mac/setup.sh
-```
-It will:
-- Install a private copy of Python if your Mac's is too old (no password needed).
-- Ask about saving attachments in iCloud Drive. Answer **N**: without an iPhone, the Mac's own folder is simpler.
-- Start the hub as a background service that starts at login and restarts itself.
-- Turn on **Tailscale Funnel**. If it prints a link that says Funnel isn't enabled, open the link, approve, and run the
+It downloads the latest Family Hub from GitHub into `~/fantasy-labs`, then:
+- Installs a private copy of Python if your Mac's is too old (no password needed).
+- Asks about saving attachments in iCloud Drive. Answer **N**: without an iPhone, the Mac's own folder is simpler.
+- Starts the hub as a background service that starts at login and restarts itself.
+- Turns on **Tailscale Funnel**. If it prints a link saying Funnel isn't enabled, open the link, approve, and paste the
   same command again.
-- Ask to turn off sleep. Answer **y** and enter your Mac password.
-- Print your hub address, e.g. **`https://mac-mini.tail1234.ts.net`**. Write it down; it's permanent.
+- Asks **"Update Family Hub automatically every night?"**: press **Return** (yes). From then on the Mac mini checks
+  GitHub at 3:30 AM and updates itself only when something changed.
+- Asks to turn off sleep. Answer **y** and enter your Mac password.
+- Prints your hub address, e.g. **`https://mac-mini.tail1234.ts.net`**. Write it down; it's permanent.
 
-### 1.5 Create your family
+Running the same command again is always safe: it updates the code and keeps your data in `~/FamilyHub`.
+
+### 1.4 Create your family
 1. On the Mac mini, open the address in Safari.
 2. Tap **New family** and enter the family name, your name, email and a password.
 3. **Settings → Add a family member** for each person:
@@ -65,7 +60,7 @@ It will:
    - Another parent gets an email and password.
 4. Note the **family code** shown in Settings; kids use it to sign in.
 
-### 1.6 Allow the macOS permission prompts
+### 1.5 Allow the macOS permission prompts
 Over the next day, small macOS boxes may appear on the Mac mini's screen saying "python … would like to …".
 Click **Allow / OK** every time; this happens only once per permission. If you clicked Don't Allow by mistake, go to
 System Settings → Privacy & Security → **Local Network** (for Wi-Fi presence) or **Automation** and switch python on.
@@ -209,7 +204,7 @@ lock or in its box, or check the model number (Matter: *DDL240XI5KMT*).
 Skip this unless you want events created in the hub to appear in Google Calendar, or attachments saved to Google Drive.
 Connections → **Google** shows the steps: create a free Google Cloud project, enable 3 APIs, set the consent screen to
 **In production**, and add the redirect URI. Then put the ID and secret in `~/FamilyHub/family-hub.env` on the
-Mac mini and run `bash ~/fantasy-labs/family-hub/mac/setup.sh` again.
+Mac mini and paste the install command from 1.3 again.
 
 ---
 
@@ -226,10 +221,8 @@ Mac mini and run `bash ~/fantasy-labs/family-hub/mac/setup.sh` again.
 | Connections | 🔌 page: everything you set up is green; anything yellow shows the error. |
 
 ## Day to day
-- **Update the hub:** paste this in Terminal (it replaces the downloaded code; your data in `~/FamilyHub` is untouched):
-  ```bash
-  cd ~ && rm -rf fantasy-labs && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip && bash ~/fantasy-labs/family-hub/mac/setup.sh
-  ```
+- **Updates are automatic** every night at 3:30 AM (log: `~/FamilyHub/logs/update.log`). To update right now, paste the
+  install command from 1.3 again.
 - **Logs:** `~/FamilyHub/logs/server.log` on the Mac mini.
 - **Backups:** `~/FamilyHub/backups` keeps a copy from each of the last 14 days. Also back up `~/FamilyHub/family-hub.env`
   (it holds the encryption key).
