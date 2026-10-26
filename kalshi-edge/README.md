@@ -31,17 +31,14 @@ If you already set the Mac Mini up for Family Hub (always on, automatic login, T
    greyed out, FileVault is on; either turn FileVault off or log in by hand after every restart.
 2. **Optional: install Tailscale** for access away from home. Get it from tailscale.com/download/mac and
    sign in. The installer then gives the dashboard a private https address.
-3. **Download.** Open Terminal (⌘ Space, type *Terminal*) and paste:
+3. **Download and install.** Open Terminal (⌘ Space, type *Terminal*) and paste this one line:
    ```bash
-   cd ~ && rm -rf fantasy-labs && curl -L -o fantasy-labs.zip https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q fantasy-labs.zip && mv fantasy-labs-main fantasy-labs && rm fantasy-labs.zip
+   d="$(mktemp -d)" && curl -fsSL -o "$d/main.zip" https://github.com/DustinBieber/fantasy-labs/archive/refs/heads/main.zip && unzip -q "$d/main.zip" -d "$d" && bash "$d/fantasy-labs-main/kalshi-edge/mac/setup.sh"
    ```
-   This is safe to repeat. Kalshi Edge keeps its data in `~/KalshiEdge` and Family Hub keeps its data in
-   `~/FamilyHub`; neither lives in `~/fantasy-labs`.
-4. **Install:**
-   ```bash
-   bash ~/fantasy-labs/kalshi-edge/mac/setup.sh
-   ```
-   It will:
+   It downloads into a temporary folder and **never touches `~/fantasy-labs`**, where Ops Hub keeps its
+   database and settings. Kalshi Edge installs itself into `~/KalshiEdge`. Later updates are just
+   `~/KalshiEdge/kalshi update`.
+   The installer will:
    - get Python if your Mac's is too old (no password needed);
    - install the app into `~/KalshiEdge` and run the test suite;
    - ask you to **choose a dashboard password**, or press Enter and it makes one and shows it to you once;
